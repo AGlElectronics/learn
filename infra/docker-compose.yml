@@ -1,0 +1,190 @@
+# Learn — standalone Docker Compose stack for Docker Desktop.
+#
+# Container ports:
+#   Every module in this ecosystem binds :8080 inside its container.
+#   The HOST port for Learn is 8120 (API) and 3005 (SPA). Mapping below.
+#
+# NOTE on MinIO: this file wires MinIO as the local S3-compatible object
+# store for the learn-data-dev bucket. MinIO is for LOCAL DEVELOPMENT ONLY
+# and must NEVER be used in production; point S3_* at a managed bucket.
+# Mailpit catches Learn's notification emails (UI: http://localhost:8026).
+#
+# Migrations: the `migrate` service is a ONE-SHOT. The backend depends on
+# it with service_completed_successfully so cmd/server never runs
+# migrations itself.
+#
+# Reserved HOST ports (Learn module):
+#   backend   : 8120  (container :8080)
+#   frontend  : 3005  (container :80)
+#   postgres  : 5437  (container :5432)
+#   minio API : 9030  (container :9000, dev-only)
+#   minio UI  : 9031  (container :9001, dev-only)
+#   mailpit   : 8026 UI / 1026 SMTP (dev-only)
+
+name: learn
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: learn-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: learn
+      POSTGRES_PASSWORD: learn
+      POSTGRES_DB: learn
+    ports:
+      - "5437:5432"
+    volumes:
+      - learn-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U learn -d learn"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # LOCAL DEV ONLY — never deploy MinIO as Learn's production object store.
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: learn-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: learn
+      MINIO_ROOT_PASSWORD: learnlearn
+    ports:
+      - "9030:9000"
+      - "9031:9001"
+    volumes:
+      - learn-minio-data:/data
+
+  # One-shot bucket bootstrapper so learn-data-dev exists on first `up`.
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-22T22-12-26Z
+    container_name: learn-minio-init
+    depends_on:
+      minio:
+        condition: service_started
+    restart: "no"
+    entrypoint: >
+      sh -c "
+      set -e;
+      until mc alias set local http://minio:9000 learn learnlearn >/dev/null 2>&1; do
+        echo 'waiting for minio'; sleep 1;
+      done;
+      mc mb --ignore-existing local/learn-data-dev;
+      echo 'bucket ready: learn-data-dev';
+      "
+
+  # DEV mail catcher for Learn's notification emails.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: learn-mailpit
+    restart: unless-stopped
+    ports:
+      - "8026:8025"
+      - "1026:1025"
+
+  # One-shot migrator. Exits zero on success; the backend waits for that.
+  migrate:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.migrate
+    container_name: learn-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://learn:learn@postgres:5432/learn?sslmode=disable
+    restart: "no"
+
+  backend:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.backend
+    container_name: learn-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+    environment:
+      APP_ENV: development
+      # Browser-facing base URL uses the HOST port so links in logs /
+      # dev tooling point at something a human can click.
+      APP_BASE_URL: http://localhost:8120
+      # Container binds :8080 (ecosystem convention). Compose maps 8120 -> 8080.
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://learn:learn@postgres:5432/learn?sslmode=disable
+      # Auth: dev = X-Dev-User / X-Dev-Groups headers; oidc = verify Bearer JWT.
+      AUTH_MODE: ${AUTH_MODE:-dev}
+      DEV_DEFAULT_USER: dev-admin
+      DEV_DEFAULT_GROUPS: learn-admin
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      OIDC_EXTRA_AUDIENCES: ${OIDC_EXTRA_AUDIENCES:-}
+      ACCESS_CONFIG_PATH: /etc/learn/access-config.toml
+      # Browser-facing SPA origin used for links in notifications.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3005}
+      # Object storage — MinIO is LOCAL DEV ONLY, never production.
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_BUCKET: ${S3_BUCKET:-learn-data-dev}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-learn}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-learnlearn}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_USE_PATH_STYLE: "${S3_USE_PATH_STYLE:-true}"
+      # Rewrite presigned URLs so the browser (which lives on the host) can
+      # resolve them even though the backend talks to minio:9000.
+      S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://localhost:9030}
+      # Optional Keycloak Admin API (group lookups); empty = disabled.
+      KEYCLOAK_BASE_URL: ${KEYCLOAK_BASE_URL:-}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+      # Learn's own notices go to Mailpit in dev.
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: "${SMTP_PORT:-1025}"
+      SMTP_FROM: ${SMTP_FROM:-no-reply@conservices.local}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Con Services}
+      # Shared secret for HR -> Learn service calls.
+      LEARN_SERVICE_TOKEN: ${LEARN_SERVICE_TOKEN:-learn-service-dev-token}
+      # Empty = Telegram notifications disabled.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Pairing with Den happens in the app (Settings → Den connection).
+      # Set this when the pairing URL Den shows is not reachable from here.
+      DEN_INTERNAL_URL: ${DEN_INTERNAL_URL:-}
+      # CORS only matters for `npm run dev` on the host — in prod the SPA
+      # talks to /api via the nginx reverse proxy on the same origin.
+      CORS_ALLOWED_ORIGINS: http://localhost:3005,https://den.conservices.test,http://localhost:3001
+    volumes:
+      - ./access-config.toml:/etc/learn/access-config.toml:ro
+    ports:
+      - "8120:8080"
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.frontend
+      args:
+        VITE_AUTH_MODE: ${VITE_AUTH_MODE:-dev}
+        VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-}
+        VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-}
+        VITE_OIDC_SCOPE: ${VITE_OIDC_SCOPE:-openid profile email}
+        VITE_PRODUCT_NAME: ${VITE_PRODUCT_NAME:-Learn}
+        LEARN_VERSION: ${LEARN_VERSION:-dev}
+    container_name: learn-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3005:80"
+
+volumes:
+  learn-postgres-data:
+  learn-minio-data:

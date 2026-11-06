@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<quiz>
+  <question type="category">
+    <category><text>$course$/top/Fire safety</text></category>
+  </question>
+
+  <question type="multichoice">
+    <name><text>Extinguisher</text></name>
+    <questiontext format="html">
+      <text><![CDATA[<p>Which extinguisher is for <b>electrical</b> fires?</p><p><img src="@@PLUGINFILE@@/sign.png" alt="sign"></p>]]></text>
+      <file name="sign.png" path="/" encoding="base64">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk
+YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==</file>
+    </questiontext>
+    <generalfeedback format="html"><text><![CDATA[CO<sub>2</sub> &amp; powder are safe.]]></text></generalfeedback>
+    <defaultgrade>2.0000000</defaultgrade>
+    <single>true</single>
+    <answer fraction="0" format="html"><text>Water</text></answer>
+    <answer fraction="100" format="html"><text><![CDATA[CO<sub>2</sub>]]></text></answer>
+    <answer fraction="0" format="html"><text>Foam</text></answer>
+  </question>
+
+  <question type="multichoice">
+    <name><text>Exits</text></name>
+    <questiontext format="html"><text><![CDATA[Select all exits:<br>Look at the map<br/>carefully.]]></text></questiontext>
+    <generalfeedback format="html"><text></text></generalfeedback>
+    <defaultgrade>1.0000000</defaultgrade>
+    <single>false</single>
+    <answer fraction="50" format="html"><text>Door A</text></answer>
+    <answer fraction="50" format="html"><text>Door B</text></answer>
+    <answer fraction="-100" format="html"><text>Lift</text></answer>
+  </question>
+
+  <question type="truefalse">
+    <name><text>Lifts</text></name>
+    <questiontext format="moodle_auto_format"><text>Lifts may be used during a fire alarm.</text></questiontext>
+    <defaultgrade>1</defaultgrade>
+    <answer fraction="0" format="moodle_auto_format"><text>true</text></answer>
+    <answer fraction="100" format="moodle_auto_format"><text>false</text></answer>
+  </question>
+
+  <question type="essay">
+    <name><text>Describe</text></name>
+    <questiontext format="html"><text>Describe the evacuation plan.</text></questiontext>
+  </question>
+
+  <question type="multichoice">
+    <name><text>Broken</text></name>
+    <questiontext format="html"><text>No correct answer here</text></questiontext>
+    <single>true</single>
+    <answer fraction="0"><text>A</text></answer>
+    <answer fraction="0"><text>B</text></answer>
+  </question>
+
+  <question type="shortanswer">
+    <name><text>Short</text></name>
+    <questiontext format="html"><text>Number to call?</text></questiontext>
+    <answer fraction="100"><text>112</text></answer>
+  </question>
+</quiz>

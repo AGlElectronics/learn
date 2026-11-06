@@ -1,0 +1,27 @@
+Which extinguisher is for electrical fires?
+A) Water
+B) CO2
+C) Foam
+ANSWER: B
+
+Select the exits
+on the ground floor.
+A. Door A
+B. Door B
+C. Lift
+ANSWER: A, B
+
+Broken question
+A) One
+B) Two
+ANSWER: D
+
+Another broken
+A) One
+stray line
+B) Two
+ANSWER: A
+
+Last question without answer
+A) Yes
+B) No

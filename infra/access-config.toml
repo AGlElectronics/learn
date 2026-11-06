@@ -1,0 +1,66 @@
+# Learn access configuration.
+#
+# This TOML file is the single source of truth for the role → permission
+# catalog and the OIDC-group → role bindings. It is read once at startup;
+# restart the backend after editing.
+#
+# Permission reference — add new names in internal/domain/domain.go,
+# otherwise the loader rejects them.
+#
+#   Courses:    course.manage  (every course)   course.teach (own courses)
+#   Enrolment:  enrol.manage
+#   Settings:   settings.manage  (Den pairing, module settings)
+#   Reports:    report.view      (completion + qualification reports, all courses)
+#
+# A role listed here replaces its built-in permission set entirely.
+#
+# Course access for learners is NOT a role: an enrolment row (created by
+# course staff or by self-enrolment) is what lets a person read a published
+# course. There is deliberately no "learn-learner" group.
+
+# Organization (slug) that bindings grant roles in, unless a binding sets
+# its own `organization`.
+organization = "demo-org"
+
+# -------------------------------------------------------------------------
+# Roles
+# -------------------------------------------------------------------------
+
+[roles.organization_admin]
+description = "Manages every course, enrolment and the module settings."
+permissions = [
+  "course.manage",
+  "enrol.manage",
+  "settings.manage",
+  "report.view",
+]
+
+[roles.trainer]
+description = "Creates courses and runs the courses they teach."
+permissions = [
+  "course.teach",
+  "enrol.manage",
+]
+
+[roles.coordinator]
+description = "Team lead: sees the completion and qualification reports."
+permissions = [
+  "report.view",
+]
+
+# -------------------------------------------------------------------------
+# OIDC group → role bindings (organization-wide, evaluated per request:
+# removing someone from the group revokes the role on their next request)
+# -------------------------------------------------------------------------
+
+[[bindings]]
+group = "learn-admin"
+role = "organization_admin"
+
+[[bindings]]
+group = "learn-trainer"
+role = "trainer"
+
+[[bindings]]
+group = "learn-coordinator"
+role = "coordinator"

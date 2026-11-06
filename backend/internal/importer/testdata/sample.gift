@@ -1,0 +1,34 @@
+// Fire safety question bank
+$CATEGORY: $course$/Fire safety
+
+::Extinguisher::Which extinguisher is for electrical fires? {
+  ~Water#No, water conducts.
+  =CO2#Correct.
+  ~Foam
+  ####CO2 leaves no residue.
+}
+
+::Exits:: Select all exits {
+  ~%50%Door A
+  ~%50%Door B
+  ~%-100%Lift
+}
+
+Lifts may be used during a fire alarm.{F}
+
+::TF true::The assembly point is outside.{TRUE#Yes}
+
+What does 1 + 1 \= ? Use the \{braces\} \~ literally {=2 ~3 ~1\=1}
+
+[html]<p>Pick <b>two</b>:</p>{=Red =Blue ~Green}
+
+// unsupported below
+Who wrote this? {=Alan =alan}
+
+::Describe:: Describe the plan. {}
+
+Two plus two {#4}
+
+Match the following {=dog -> bark =cat -> meow}
+
+Just a description without answers.
