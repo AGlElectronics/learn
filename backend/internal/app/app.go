@@ -102,7 +102,10 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 
 	brandProvider := brand.New(cfg)
-	den := denlink.New(pool, denlink.Config{Slug: "learn", Version: Version, InternalURL: cfg.DenInternalURL}, logger)
+	den := denlink.New(pool, denlink.Config{Slug: "learn", Version: Version, InternalURL: cfg.DenInternalURL, Mode: cfg.DenMode}, logger)
+	if err := den.Restore(ctx); err != nil {
+		logger.Warn().Err(err).Msg("den link: load failed")
+	}
 	go den.Run(ctx)
 
 	// Keycloak group sync: every 5 minutes, off when KEYCLOAK_* is unset.

@@ -7,6 +7,13 @@
   "nav.openMenu": "Menu openen",
   "nav.closeMenu": "Menu sluiten",
 
+  "den.connectTitle": "Verbind deze module met Den",
+  "den.stepPair": "Open in Den Modules en klik op Pair naast Learn",
+  "den.stepCopy": "Kopieer de koppel-URL (15 minuten geldig)",
+  "den.stepPaste": "Plak die hieronder",
+  "den.waitingTitle": "Wachten op Den",
+  "den.waiting": "Deze module wacht op een koppeling met Den. Vraag een beheerder om de module te koppelen.",
+
   "common.loading": "Laden…",
   "common.save": "Opslaan",
   "common.saved": "Opgeslagen.",

@@ -8,6 +8,7 @@
 //	GET /livez             — process liveness (unauthenticated)
 //	GET /readyz            — service readiness (unauthenticated)
 //	GET /api/health        — richer status for humans
+//	GET /api/den/state     — Den mode and pairing (unauthenticated; also /api/v1/den/state)
 //	GET /api/role-catalog  — public role catalog for HR's access picker
 //	GET /api/v1/brand      — active brand package (unauthenticated)
 //	GET /api/v1/me         — authenticated principal + permissions
@@ -49,6 +50,8 @@
 //
 // Everything under /api/v1 (except /brand) requires authentication; the
 // auth middleware is applied inside a chi.Group so the shape is explicit.
+// With DEN_MODE=required, the /api routes other than health, role catalog,
+// brand, me and den answer 503 den_pairing_required until Den pairs.
 package http
 
 import (
@@ -131,7 +134,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 
 	den := deps.Den
 	if den == nil {
-		den = denlink.New(deps.Pool, denlink.Config{Slug: "learn", Version: version}, deps.Logger)
+		den = denlink.New(deps.Pool, denlink.Config{Slug: "learn", Version: version, Mode: deps.Config.DenMode}, deps.Logger)
 	}
 	brandH := &brandHandler{provider: deps.Brand, den: den}
 	courses := &courseHandler{svc: learn.NewService(deps.Pool)}
@@ -145,8 +148,10 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Get("/readyz", health.readyz)
 
 	r.Route("/api", func(api chi.Router) {
+		api.Use(den.RequirePaired)
 		api.Get("/health", health.get)
 		api.Get("/role-catalog", roleCatalogHandler(deps.Access))
+		api.Get("/den/state", den.StateHandler)
 		api.Get("/qualification-catalog", qualificationCatalogHandler(courses.svc))
 		api.Get("/internal/holdings", holdingsHandler(deps.Config, courses.svc))
 		api.With(newRateLimiter(30, time.Minute).middleware).Get("/public/verify/{code}", verifyHandler(courses.svc))
@@ -158,6 +163,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 			// user authenticates.
 			v1.Get("/brand", brandH.get)
 			v1.Get("/brand/{role}", den.AssetHandler)
+			v1.Get("/den/state", den.StateHandler)
 
 			v1.Group(func(secure chi.Router) {
 				secure.Use(authMW)

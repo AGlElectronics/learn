@@ -7,6 +7,13 @@
   "nav.openMenu": "Open menu",
   "nav.closeMenu": "Close menu",
 
+  "den.connectTitle": "Connect this module to Den",
+  "den.stepPair": "In Den, open Modules and click Pair next to Learn",
+  "den.stepCopy": "Copy the pairing URL (valid 15 minutes)",
+  "den.stepPaste": "Paste it below",
+  "den.waitingTitle": "Waiting for Den",
+  "den.waiting": "This module is waiting to be connected to Den. Ask an administrator to pair it.",
+
   "common.loading": "Loading…",
   "common.save": "Save",
   "common.saved": "Saved.",

@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { BarChart3, GraduationCap, LogOut, Menu, Presentation, Settings, X } from 'lucide-react';
 import { getReportScope } from '@/api/reports';
 import { isOidcAuthMode, signOutOidc } from '@/auth/oidc';
+import { DenConnection } from '@/components/DenConnection';
 import { LanguageSwitcher, useLanguageSync } from '@/components/LanguageSwitcher';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { useBrand } from '@/brand/BrandProvider';
+import { isDenPairingRequired, useDenState } from '@/hooks/useDenState';
 import { useMe, PERMS } from '@/hooks/useMe';
 import { useT, type MessageKey } from '@/i18n';
 import { useThemeSync } from '@/lib/theme';
@@ -94,8 +96,57 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+/** Shown instead of the app while the backend runs with DEN_MODE=required and is not paired. */
+function DenPairingGate({ canManage }: { canManage: boolean }) {
+  const qc = useQueryClient();
+  const t = useT();
+  return (
+    <div className="min-h-screen grid place-items-center bg-background text-foreground p-6">
+      <div className="max-w-xl w-full rounded-2xl border border-border bg-card p-6 space-y-4">
+        <div className="flex justify-center">
+          <Wordmark />
+        </div>
+        {canManage ? (
+          <>
+            <h1 className="font-heading text-lg font-bold text-center">{t('den.connectTitle')}</h1>
+            <ol className="list-decimal space-y-1 pl-5 text-sm">
+              <li>{t('den.stepPair')}</li>
+              <li>{t('den.stepCopy')}</li>
+              <li>{t('den.stepPaste')}</li>
+            </ol>
+            <DenConnection base="/api/v1/den" onPaired={() => void qc.invalidateQueries()} />
+          </>
+        ) : (
+          <div className="space-y-1 text-center">
+            <h1 className="font-heading text-lg font-bold">{t('den.waitingTitle')}</h1>
+            <p className="text-sm text-muted-foreground">{t('den.waiting')}</p>
+          </div>
+        )}
+        <div className="flex justify-center gap-2">
+          <ThemeToggle className="rounded-pill" />
+          <LanguageSwitcher persist />
+          {isOidcAuthMode() ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-pill text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+              onClick={() => {
+                signOutOidc().catch(() => undefined);
+              }}
+            >
+              <LogOut className="w-4 h-4 shrink-0" />
+              {t('nav.signOut')}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Layout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { me, can } = useMe();
+  const denState = useDenState();
   const [drawerOpen, setDrawerOpen] = useState(false);
   useThemeSync('/api/v1/me/preferences');
   useLanguageSync();
@@ -105,6 +156,10 @@ export function Layout() {
   useEffect(() => {
     setDrawerOpen(false);
   }, [pathname]);
+
+  if (me && isDenPairingRequired(denState.data)) {
+    return <DenPairingGate canManage={can(PERMS.settingsManage)} />;
+  }
 
   const footer = (
     <div className="mt-auto p-2 border-t border-border space-y-0.5">
