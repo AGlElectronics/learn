@@ -5,7 +5,7 @@ not a Moodle embed: courses of pages, quizzes and in-person sessions,
 qualifications with printable certificates, learning paths, reminders and
 reports. The domain rules live in [docs/domain.md](docs/domain.md).
 
-- **Backend:** Go 1.25, chi, pgx (hand-written queries; sqlc comes with a
+- **Backend:** Go 1.27, chi, pgx (hand-written queries; sqlc comes with a
   later pass, same as HR).
 - **Frontend:** React 19 + Rsbuild + TanStack Router/Query + Tailwind,
   English and Dutch UI (`src/i18n`).

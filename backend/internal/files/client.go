@@ -1,5 +1,5 @@
 // Package files wraps an S3-compatible object storage client. In local
-// development this points at MinIO; in production it MUST point at a
+// development this points at the dev S3 server (SeaweedFS); in production it MUST point at a
 // managed S3-compatible bucket.
 //
 // The adapter is deliberately provider-neutral; feature code never imports
@@ -24,7 +24,7 @@ import (
 
 // Client wraps *minio.Client plus the configured bucket and an optional
 // public-facing base URL used to rewrite presigned URLs for the browser
-// (e.g. "minio:9020" → "localhost:9020" in Docker Compose).
+// (e.g. "s3:9000" → "localhost:9030" in Docker Compose).
 type Client struct {
 	mc            *minio.Client
 	bucket        string
@@ -92,10 +92,11 @@ func publicBaseURL(cfg *config.Config) (*url.URL, error) {
 		return nil, err
 	}
 	// Compose service hostnames are not reachable from the host browser;
-	// swap "minio" for "localhost" so presigned URLs returned to a dev SPA
-	// actually work. The S3_PUBLIC_BASE_URL override above takes precedence.
-	if strings.Contains(u.Host, "minio") {
-		u.Host = strings.ReplaceAll(u.Host, "minio", "localhost")
+	// swap the host "s3" (formerly "minio") for "localhost" so presigned URLs
+	// returned to a dev SPA actually work. The S3_PUBLIC_BASE_URL override
+	// above takes precedence.
+	if h := u.Hostname(); h == "s3" || h == "minio" {
+		u.Host = strings.Replace(u.Host, h, "localhost", 1)
 	}
 	return u, nil
 }

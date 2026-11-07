@@ -18,6 +18,7 @@
 // Learner-facing payloads are served in the caller's language: ?lang=,
 // else the saved preference, else Accept-Language, matched against the
 // course's languages, falling back to its default language.
+//
 //	POST /api/v1/courses   — create a course (trainers and admins)
 //	GET|PATCH /api/v1/courses/{course}, POST …/{publish|unpublish|enrol}
 //	GET|POST /api/v1/courses/{course}/enrolments, DELETE /api/v1/enrolments/{enrolment}
@@ -63,6 +64,7 @@ import (
 
 	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/brand"
+	"github.com/AGlElectronics/learn/backend/internal/clientip"
 	"github.com/AGlElectronics/learn/backend/internal/config"
 	"github.com/AGlElectronics/learn/backend/internal/denlink"
 	"github.com/AGlElectronics/learn/backend/internal/domain"
@@ -98,7 +100,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(chimiddleware.RequestID)
-	r.Use(chimiddleware.RealIP)
+	r.Use(clientip.Middleware(deps.Config.TrustedProxyCIDRs))
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.Timeout(60 * time.Second))
 

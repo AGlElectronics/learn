@@ -7,11 +7,11 @@
 // has no saved language preference.
 
 import { getLang } from '@/i18n/lang';
+import { runtimeConfig } from '@/runtime-config';
 
-const API_BASE_URL =
+const apiBaseUrl = () =>
   (typeof process !== 'undefined' ? process.env.LEARN_API_BASE_URL : undefined) ??
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
-  '';
+  runtimeConfig().apiBaseUrl;
 
 export type ApiErrorBody = {
   error: {
@@ -59,7 +59,7 @@ type RequestOpts = {
 
 export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   const url = new URL(
-    path.startsWith('http') ? path : `${API_BASE_URL}${path}`,
+    path.startsWith('http') ? path : `${apiBaseUrl()}${path}`,
     typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
   );
   if (opts.query) {
@@ -114,7 +114,7 @@ export async function apiFetch(
   init: { method?: 'GET' | 'POST'; body?: FormData; query?: Record<string, string> } = {}
 ): Promise<Response> {
   const url = new URL(
-    `${API_BASE_URL}${path}`,
+    `${apiBaseUrl()}${path}`,
     typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
   );
   for (const [k, v] of Object.entries(init.query ?? {})) url.searchParams.set(k, v);

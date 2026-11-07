@@ -21,9 +21,11 @@ func TestPublicBaseURL(t *testing.T) {
 		cfg  config.Config
 		want string
 	}{
-		{"compose host rewritten", config.Config{S3Endpoint: "http://minio:9000"}, "http://localhost:9000"},
-		{"override wins", config.Config{S3Endpoint: "http://minio:9000", S3PublicBaseURL: "https://s3.example.test"}, "https://s3.example.test"},
+		{"compose host rewritten", config.Config{S3Endpoint: "http://s3:9000"}, "http://localhost:9000"},
+		{"old compose host rewritten", config.Config{S3Endpoint: "http://minio:9000"}, "http://localhost:9000"},
+		{"override wins", config.Config{S3Endpoint: "http://s3:9000", S3PublicBaseURL: "https://s3.example.test"}, "https://s3.example.test"},
 		{"external untouched", config.Config{S3Endpoint: "https://s3.eu.example.com"}, "https://s3.eu.example.com"},
+		{"external with s3 label untouched", config.Config{S3Endpoint: "https://s3.amazonaws.com"}, "https://s3.amazonaws.com"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -41,7 +43,7 @@ func TestPublicBaseURL(t *testing.T) {
 func TestRewriteURL(t *testing.T) {
 	pub, _ := url.Parse("http://localhost:9020")
 	c := &Client{publicBaseURL: pub}
-	in, _ := url.Parse("http://minio:9000/learn-data-dev/k?X-Amz-Signature=abc")
+	in, _ := url.Parse("http://s3:9000/learn-data-dev/k?X-Amz-Signature=abc")
 	if got := c.rewriteURL(in).String(); got != "http://localhost:9020/learn-data-dev/k?X-Amz-Signature=abc" {
 		t.Fatalf("got %q", got)
 	}

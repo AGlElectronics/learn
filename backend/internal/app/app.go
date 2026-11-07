@@ -30,6 +30,7 @@ import (
 	"github.com/AGlElectronics/learn/backend/internal/learn"
 	"github.com/AGlElectronics/learn/backend/internal/mail"
 	"github.com/AGlElectronics/learn/backend/internal/notify"
+	"github.com/AGlElectronics/learn/backend/internal/tlscert"
 )
 
 // Version is set via -ldflags at build time; left as "dev" for local runs.
@@ -168,6 +169,9 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	if _, err := tlscert.Configure(ctx, server, logger); err != nil {
+		return fmt.Errorf("tls: %w", err)
+	}
 
 	return runServer(ctx, server, pool, cfg.ShutdownTimeout, logger)
 }
@@ -179,7 +183,7 @@ func runServer(ctx context.Context, server *nethttp.Server, pool *pgxpool.Pool, 
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info().Str("addr", server.Addr).Msg("http listening")
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, nethttp.ErrServerClosed) {
+		if err := tlscert.ListenAndServe(server); err != nil && !errors.Is(err, nethttp.ErrServerClosed) {
 			errCh <- err
 		}
 		close(errCh)

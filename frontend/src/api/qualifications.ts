@@ -1,6 +1,7 @@
 import { apiRequest } from '@/api/client';
 import type { MessageKey } from '@/i18n';
 import { getLang, getLocale } from '@/i18n/lang';
+import { runtimeConfig } from '@/runtime-config';
 
 export type Qualification = {
   id: string;
@@ -124,8 +125,7 @@ export function revokeCertificate(id: string, reason: string) {
 export async function verifyCertificate(code: string, signal?: AbortSignal): Promise<PublicVerification | null> {
   const base =
     (typeof process !== 'undefined' ? process.env.LEARN_API_BASE_URL : undefined) ??
-    (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
-    '';
+    runtimeConfig().apiBaseUrl;
   const res = await fetch(`${base}/api/public/verify/${encodeURIComponent(code)}`, {
     headers: { Accept: 'application/json', 'Accept-Language': getLang() },
     signal,

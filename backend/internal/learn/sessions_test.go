@@ -66,4 +66,3 @@ func TestCheckinOpen(t *testing.T) {
 		}
 	}
 }
-

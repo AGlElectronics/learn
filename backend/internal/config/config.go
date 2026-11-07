@@ -10,12 +10,15 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
+
+	"github.com/AGlElectronics/learn/backend/internal/clientip"
 )
 
 // AuthMode selects how incoming requests are authenticated.
@@ -60,13 +63,16 @@ type Config struct {
 
 	// HTTP
 	CORSAllowedOrigins []string
-	ShutdownTimeout    time.Duration
+	// TrustedProxyCIDRs lists the proxies whose X-Forwarded-For entries are
+	// believed when working out the client IP (TRUSTED_PROXY_CIDRS).
+	TrustedProxyCIDRs []netip.Prefix
+	ShutdownTimeout   time.Duration
 
 	// PublicBaseURL is the browser-facing origin of the Learn SPA, used to
 	// build links in notifications (e.g. https://learn.conservices.test).
 	PublicBaseURL string
 
-	// Object storage (S3-compatible; MinIO in dev). Empty S3Endpoint
+	// Object storage (S3-compatible; SeaweedFS in dev). Empty S3Endpoint
 	// disables file storage.
 	S3Endpoint        string
 	S3Bucket          string
@@ -164,6 +170,12 @@ func Load() (*Config, error) {
 		LearnServiceToken: getEnv("LEARN_SERVICE_TOKEN", ""),
 		TelegramBotToken:  getEnv("TELEGRAM_BOT_TOKEN", ""),
 	}
+
+	trusted, err := clientip.ParseCIDRs(getEnv("TRUSTED_PROXY_CIDRS", clientip.DefaultTrustedProxies))
+	if err != nil {
+		return nil, fmt.Errorf("invalid config: TRUSTED_PROXY_CIDRS: %w", err)
+	}
+	cfg.TrustedProxyCIDRs = trusted
 
 	if err := cfg.validate(); err != nil {
 		return nil, err

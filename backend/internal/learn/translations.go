@@ -37,7 +37,7 @@ const (
 )
 
 const (
-	maxCourseLanguages   = 20
+	maxCourseLanguages    = 20
 	maxTranslationsPerPut = 5000
 )
 

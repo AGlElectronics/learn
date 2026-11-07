@@ -3,7 +3,6 @@ package http
 import (
 	"context"
 	"crypto/subtle"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/AGlElectronics/learn/backend/internal/brand"
+	"github.com/AGlElectronics/learn/backend/internal/clientip"
 	"github.com/AGlElectronics/learn/backend/internal/config"
 	"github.com/AGlElectronics/learn/backend/internal/denlink"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
@@ -50,11 +50,7 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 
 func (l *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		if host, _, err := net.SplitHostPort(ip); err == nil {
-			ip = host
-		}
-		if !l.allow(ip, time.Now()) {
+		if !l.allow(clientip.FromRequest(r), time.Now()) {
 			w.Header().Set("Retry-After", "60")
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"error": map[string]string{"code": "rate_limited", "message": "too many requests; try again in a minute"},

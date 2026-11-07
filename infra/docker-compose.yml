@@ -4,9 +4,10 @@
 #   Every module in this ecosystem binds :8080 inside its container.
 #   The HOST port for Learn is 8120 (API) and 3005 (SPA). Mapping below.
 #
-# NOTE on MinIO: this file wires MinIO as the local S3-compatible object
-# store for the learn-data-dev bucket. MinIO is for LOCAL DEVELOPMENT ONLY
-# and must NEVER be used in production; point S3_* at a managed bucket.
+# NOTE on object storage: this file wires SeaweedFS (service "s3") as the
+# local S3-compatible object store for the learn-data-dev bucket. It is for
+# LOCAL DEVELOPMENT ONLY and must NEVER be used in production; point S3_* at
+# a managed bucket.
 # Mailpit catches Learn's notification emails (UI: http://localhost:8026).
 #
 # Migrations: the `migrate` service is a ONE-SHOT. The backend depends on
@@ -17,8 +18,7 @@
 #   backend   : 8120  (container :8080)
 #   frontend  : 3005  (container :80)
 #   postgres  : 5437  (container :5432)
-#   minio API : 9030  (container :9000, dev-only)
-#   minio UI  : 9031  (container :9001, dev-only)
+#   s3 API    : 9030  (container :9000, dev-only)
 #   mailpit   : 8026 UI / 1026 SMTP (dev-only)
 
 name: learn
@@ -42,38 +42,36 @@ services:
       timeout: 5s
       retries: 10
 
-  # LOCAL DEV ONLY — never deploy MinIO as Learn's production object store.
-  minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    container_name: learn-minio
+  # LOCAL DEV ONLY — never deploy this S3 server as Learn's production object
+  # store. SeaweedFS "mini"; learn-data-dev is created on start and "healthy"
+  # means it exists. DEV key learn / learnlearn.
+  s3:
+    image: chrislusf/seaweedfs:4.52
+    container_name: learn-s3
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    command:
+      - mini
+      - -dir=/data
+      - -s3.port=9000
+      - -bucket=learn-data-dev
+      - -master.telemetry=false
+      - -admin.ui=false
+      - -webdav=false
+      - -s3.port.iceberg=0
+      - -s3.port.lance=0
     environment:
-      MINIO_ROOT_USER: learn
-      MINIO_ROOT_PASSWORD: learnlearn
+      AWS_ACCESS_KEY_ID: learn
+      AWS_SECRET_ACCESS_KEY: learnlearn
     ports:
       - "9030:9000"
-      - "9031:9001"
     volumes:
-      - learn-minio-data:/data
-
-  # One-shot bucket bootstrapper so learn-data-dev exists on first `up`.
-  minio-init:
-    image: minio/mc:RELEASE.2025-04-22T22-12-26Z
-    container_name: learn-minio-init
-    depends_on:
-      minio:
-        condition: service_started
-    restart: "no"
-    entrypoint: >
-      sh -c "
-      set -e;
-      until mc alias set local http://minio:9000 learn learnlearn >/dev/null 2>&1; do
-        echo 'waiting for minio'; sleep 1;
-      done;
-      mc mb --ignore-existing local/learn-data-dev;
-      echo 'bucket ready: learn-data-dev';
-      "
+      - learn-s3-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9000/healthz && wget -q --spider http://127.0.0.1:8888/buckets/learn-data-dev/"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
 
   # DEV mail catcher for Learn's notification emails.
   mailpit:
@@ -109,8 +107,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      minio-init:
-        condition: service_completed_successfully
+      s3:
+        condition: service_healthy
       mailpit:
         condition: service_started
     environment:
@@ -132,15 +130,15 @@ services:
       ACCESS_CONFIG_PATH: /etc/learn/access-config.toml
       # Browser-facing SPA origin used for links in notifications.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3005}
-      # Object storage — MinIO is LOCAL DEV ONLY, never production.
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      # Object storage — the s3 service is LOCAL DEV ONLY, never production.
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://s3:9000}
       S3_BUCKET: ${S3_BUCKET:-learn-data-dev}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-learn}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-learnlearn}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_USE_PATH_STYLE: "${S3_USE_PATH_STYLE:-true}"
       # Rewrite presigned URLs so the browser (which lives on the host) can
-      # resolve them even though the backend talks to minio:9000.
+      # resolve them even though the backend talks to s3:9000.
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://localhost:9030}
       # Optional Keycloak Admin API (group lookups); empty = disabled.
       KEYCLOAK_BASE_URL: ${KEYCLOAK_BASE_URL:-}
@@ -162,6 +160,7 @@ services:
       # CORS only matters for `npm run dev` on the host — in prod the SPA
       # talks to /api via the nginx reverse proxy on the same origin.
       CORS_ALLOWED_ORIGINS: http://localhost:3005,https://den.conservices.test,http://localhost:3001
+      TRUSTED_PROXY_CIDRS: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7"
     volumes:
       - ./access-config.toml:/etc/learn/access-config.toml:ro
     ports:
@@ -172,19 +171,18 @@ services:
       context: ..
       dockerfile: infra/Dockerfile.frontend
       args:
-        VITE_AUTH_MODE: ${VITE_AUTH_MODE:-dev}
-        VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-}
-        VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-}
-        VITE_OIDC_SCOPE: ${VITE_OIDC_SCOPE:-openid profile email}
-        VITE_PRODUCT_NAME: ${VITE_PRODUCT_NAME:-Learn}
         LEARN_VERSION: ${LEARN_VERSION:-dev}
     container_name: learn-frontend
+    volumes:
+      # Web app settings (/config.json). Dev sign-in by default; for real
+      # sign-in set FRONTEND_CONFIG to your own file (docs: configuration).
+      - ${FRONTEND_CONFIG:-./frontend-config/compose.json}:/etc/conservices/config.json:ro
     restart: unless-stopped
     depends_on:
       - backend
     ports:
-      - "3005:80"
+      - "3005:8080"
 
 volumes:
   learn-postgres-data:
-  learn-minio-data:
+  learn-s3-data:
