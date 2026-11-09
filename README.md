@@ -1,5 +1,11 @@
 # Learn
 
+> [!WARNING]
+> ## **NOT READY FOR PRODUCTION**
+>
+> Con Services is under active development. Expect breaking changes, missing
+> features and bugs. Do not use it for real events or real data yet.
+
 Training module for the Con Services stack — the suite's own course package,
 not a Moodle embed: courses of pages, quizzes and in-person sessions,
 qualifications with printable certificates, learning paths, reminders and
