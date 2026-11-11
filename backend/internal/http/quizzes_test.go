@@ -300,12 +300,17 @@ func TestQuizzes(t *testing.T) {
 	})
 
 	t.Run("reset deletes attempts and completions and unlocks options", func(t *testing.T) {
-		code, _ := call(t, h, learner, "DELETE", "/api/v1/activities/"+quizID+"/attempts", nil)
+		reset := "/api/v1/activities/" + quizID + "/reset"
+		code, _ := call(t, h, learner, "POST", reset, map[string]any{"confirm": "Check"})
 		mustStatus(t, code, 403, "learner resets quiz")
-		code, out := call(t, h, trainerA, "DELETE", "/api/v1/activities/"+quizID+"/attempts", nil)
-		mustStatus(t, code, 200, "trainer resets quiz")
-		if num(out, "deleted") != 2 {
-			t.Fatalf("reset deleted %v, want 2", out)
+		code, _ = call(t, h, trainerA, "POST", reset, map[string]any{"confirm": "Check"})
+		mustStatus(t, code, 403, "trainer resets quiz (needs course.manage)")
+		code, _ = call(t, h, admin, "POST", reset, map[string]any{"confirm": "check"})
+		mustStatus(t, code, 422, "reset with the wrong confirmation")
+		code, out := call(t, h, admin, "POST", reset, map[string]any{"confirm": "Check"})
+		mustStatus(t, code, 200, "admin resets quiz")
+		if num(out, "attempts") != 2 || num(out, "completions") != 1 {
+			t.Fatalf("reset deleted %v, want 2 attempts and 1 completion", out)
 		}
 		code, _ = call(t, h, trainerA, "PATCH", "/api/v1/options/"+red, map[string]any{"label": "Crimson"})
 		mustStatus(t, code, 200, "edit option after reset")

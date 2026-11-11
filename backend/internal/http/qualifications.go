@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/AGlElectronics/learn/backend/internal/audit"
 	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/domain"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
@@ -117,6 +118,7 @@ func (h *qualificationHandler) create(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
+	h.record(r, qualificationEntry(audit.QualificationSaved, q.OrganizationID, q.ID, map[string]any{"created": true}))
 	writeJSON(w, http.StatusCreated, q)
 }
 
@@ -153,6 +155,7 @@ func (h *qualificationHandler) update(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
+	h.record(r, qualificationEntry(audit.QualificationSaved, q.OrganizationID, q.ID, nil))
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -166,6 +169,7 @@ func (h *qualificationHandler) remove(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
+	h.record(r, qualificationEntry(audit.QualificationGone, q.OrganizationID, q.ID, map[string]any{"key": q.Key}))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -343,5 +347,14 @@ func (h *qualificationHandler) revoke(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
+	org := c.OrganizationID
+	h.record(r, audit.Entry{Action: audit.CertificateRevoked, TargetType: "certificate", TargetID: id.String(),
+		OrganizationID: &org, CourseID: c.CourseID,
+		Details: map[string]any{"user_id": c.UserID, "qualification_id": c.QualificationID, "reason": strings.TrimSpace(in.Reason)}})
 	writeJSON(w, http.StatusOK, h.withURL(out))
+}
+
+// qualificationEntry is an audit entry about a qualification.
+func qualificationEntry(action string, orgID, id uuid.UUID, details map[string]any) audit.Entry {
+	return audit.Entry{Action: action, TargetType: "qualification", TargetID: id.String(), OrganizationID: &orgID, Details: details}
 }

@@ -1012,23 +1012,37 @@ func (s *Service) SubmitAttempt(ctx context.Context, attemptID, userID uuid.UUID
 	return s.GetAttempt(ctx, attemptID)
 }
 
-// ResetAttempts deletes every attempt on a quiz and its completions, which
-// also unlocks the quiz's questions for editing.
-func (s *Service) ResetAttempts(ctx context.Context, activityID uuid.UUID) (int64, error) {
+// ResetResult counts what a quiz reset deleted.
+type ResetResult struct {
+	Attempts    int64 `json:"attempts"`
+	Completions int64 `json:"completions"`
+}
+
+// ResetAttempts deletes the attempts and completions of a quiz in each
+// person's current cycle (and any open attempt). Earlier cycles, and every
+// certificate already issued, stay untouched; their attempts keep the
+// questions they used locked.
+func (s *Service) ResetAttempts(ctx context.Context, activityID uuid.UUID) (ResetResult, error) {
+	var res ResetResult
 	if _, err := s.QuizActivity(ctx, activityID); err != nil {
-		return 0, err
+		return res, err
 	}
-	var n int64
 	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `DELETE FROM quiz_attempts WHERE activity_id = $1`, activityID)
+		tag, err := tx.Exec(ctx, `
+			DELETE FROM quiz_attempts qa
+			 WHERE qa.activity_id = $1
+			   AND (qa.submitted_at IS NULL OR qa.cycle = `+activityCycleOf("qa.activity_id", "qa.user_id")+`)`, activityID)
 		if err != nil {
 			return err
 		}
-		n = tag.RowsAffected()
-		_, err = tx.Exec(ctx, `DELETE FROM completions WHERE activity_id = $1`, activityID)
+		res.Attempts = tag.RowsAffected()
+		tag, err = tx.Exec(ctx, `
+			DELETE FROM completions c
+			 WHERE c.activity_id = $1 AND c.cycle = `+activityCycleOf("c.activity_id", "c.user_id"), activityID)
+		res.Completions = tag.RowsAffected()
 		return err
 	})
-	return n, err
+	return res, err
 }
 
 // ----------------------------------------------------------------------------

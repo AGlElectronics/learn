@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/AGlElectronics/learn/backend/internal/audit"
 	"github.com/AGlElectronics/learn/backend/internal/auth"
+	"github.com/AGlElectronics/learn/backend/internal/domain"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 	"github.com/AGlElectronics/learn/backend/internal/learn"
 )
@@ -46,7 +49,7 @@ func mountQuizRoutes(r chi.Router, courses *courseHandler) {
 
 	r.Get("/activities/{activity}/quiz", h.quizInfo)
 	r.Post("/activities/{activity}/attempts", h.startAttempt)
-	r.Delete("/activities/{activity}/attempts", h.resetAttempts)
+	r.Post("/activities/{activity}/reset", h.resetAttempts)
 	r.Get("/attempts/{attempt}", h.getAttempt)
 	r.Post("/attempts/{attempt}/submit", h.submitAttempt)
 }
@@ -517,18 +520,44 @@ func (h *quizHandler) startAttempt(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, attempt)
 }
 
+// resetAttempts serves POST /activities/{activity}/reset: course.manage
+// only, with the quiz's title typed as confirmation. Deletes the current
+// cycle's attempts and completions; past cycles and certificates stay.
 func (h *quizHandler) resetAttempts(w http.ResponseWriter, r *http.Request) {
-	id, _, err := h.staffOn(r, "activity", h.svc.ActivityCourse)
+	id, course, err := h.staffOn(r, "activity", h.svc.ActivityCourse)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
-	n, err := h.svc.ResetAttempts(r.Context(), id)
+	u, _ := auth.FromContext(r.Context())
+	if !u.HasInOrg(domain.PermCourseManage, course.OrganizationID) {
+		httperror.Render(w, r, httperror.New(httperror.CodeForbidden, "only course managers (course.manage) can reset a quiz"))
+		return
+	}
+	var in struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		httperror.Render(w, r, err)
+		return
+	}
+	quiz, err := h.svc.QuizActivity(r.Context(), id)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
+	if strings.TrimSpace(in.Confirm) != strings.TrimSpace(quiz.Title) {
+		httperror.Render(w, r, httperror.Validation("type the quiz's title in confirm to reset it", map[string]string{"expected": quiz.Title}))
+		return
+	}
+	res, err := h.svc.ResetAttempts(r.Context(), id)
+	if err != nil {
+		httperror.Render(w, r, err)
+		return
+	}
+	h.record(r, courseEntry(audit.QuizReset, course, "activity", id.String(),
+		map[string]any{"attempts": res.Attempts, "completions": res.Completions}))
+	writeJSON(w, http.StatusOK, res)
 }
 
 // getAttempt serves the attempt's owner, or course staff.
@@ -597,6 +626,10 @@ func (h *quizHandler) submitAttempt(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
+	h.record(r, courseEntry(audit.QuizGraded, course, "quiz_attempt", attempt.ID.String(), map[string]any{
+		"activity_id": attempt.ActivityID, "user_id": attempt.UserID,
+		"score": attempt.Score, "max_score": attempt.MaxScore, "passed": attempt.Passed,
+	}))
 	writeJSON(w, http.StatusOK, attempt)
 }
 

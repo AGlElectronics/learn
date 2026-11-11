@@ -8,6 +8,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/AGlElectronics/learn/backend/internal/audit"
+	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 	"github.com/AGlElectronics/learn/backend/internal/learn"
 )
@@ -114,6 +116,11 @@ func (h *courseHandler) updateEnrolment(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
+	}
+	h.record(r, courseEntry(audit.EnrolmentUpdated, course, "enrolment", id.String(),
+		map[string]any{"user_id": e.UserID, "due_at": in.DueAt.Value}))
+	if u, _ := auth.FromContext(r.Context()); !maySeeEmails(u, course.OrganizationID) {
+		e.Email = ""
 	}
 	writeJSON(w, http.StatusOK, e)
 }
