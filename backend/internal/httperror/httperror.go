@@ -30,6 +30,10 @@ const (
 	CodeLocked Code = "locked"
 	// CodeUnavailable (503): an optional integration (object storage) is off.
 	CodeUnavailable Code = "unavailable"
+	// CodeArchived (409): the course is archived and read-only.
+	CodeArchived Code = "archived"
+	// CodeRateLimited (429): too many requests; retry after Retry-After.
+	CodeRateLimited Code = "rate_limited"
 )
 
 // Error is the canonical service error. Services return *Error or wrap one
@@ -145,8 +149,10 @@ func statusFor(code Code) int {
 		return http.StatusServiceUnavailable
 	case CodeNotFound:
 		return http.StatusNotFound
-	case CodeConflict:
+	case CodeConflict, CodeArchived:
 		return http.StatusConflict
+	case CodeRateLimited:
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}

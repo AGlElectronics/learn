@@ -16,12 +16,12 @@ import (
 //	PUT  /courses/{course}/feedback-settings  — staff: {enabled?, anonymous?}
 //	GET  /courses/{course}/feedback/mine      — learner: what they may rate
 //	POST /courses/{course}/feedback           — learner: {activity_id?, rating, comment}
-func mountFeedbackRoutes(r chi.Router, courses *courseHandler) {
+func mountFeedbackRoutes(r chi.Router, courses *courseHandler, limits limitSet) {
 	h := &quizHandler{courses}
 	r.Get("/courses/{course}/feedback", h.feedbackSummary)
 	r.Put("/courses/{course}/feedback-settings", h.setFeedbackSettings)
 	r.Get("/courses/{course}/feedback/mine", h.myFeedback)
-	r.Post("/courses/{course}/feedback", h.submitFeedback)
+	r.With(limits.hook(LimitFeedback)).Post("/courses/{course}/feedback", h.submitFeedback)
 }
 
 func (h *quizHandler) feedbackSummary(w http.ResponseWriter, r *http.Request) {

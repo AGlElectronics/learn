@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/AGlElectronics/learn/backend/internal/audit"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 	"github.com/AGlElectronics/learn/backend/internal/learn"
 )
@@ -24,7 +25,7 @@ type sessionHandler struct {
 // /api/v1 router. Session slots live under /slots/{slot}/… next to the
 // quiz-slot routes (PATCH|DELETE /slots/{slot}), so slot editing uses
 // /session-slots/{slot}.
-func mountSessionRoutes(r chi.Router, courses *courseHandler, publicBaseURL string) {
+func mountSessionRoutes(r chi.Router, courses *courseHandler, publicBaseURL string, limits limitSet) {
 	h := &sessionHandler{quizHandler: &quizHandler{courses}, publicBaseURL: publicBaseURL}
 
 	r.Get("/activities/{activity}/session", h.sessionInfo)
@@ -35,7 +36,7 @@ func mountSessionRoutes(r chi.Router, courses *courseHandler, publicBaseURL stri
 	r.Post("/slots/{slot}/booking", h.book)
 	r.Delete("/slots/{slot}/booking", h.cancel)
 	r.Get("/slots/{slot}/checkin-code", h.checkinCode)
-	r.Post("/slots/{slot}/checkin", h.checkIn)
+	r.With(limits.hook(LimitCheckIn)).Post("/slots/{slot}/checkin", h.checkIn)
 	r.Get("/slots/{slot}/roster", h.roster)
 	r.Put("/signups/{signup}", h.setSignupStatus)
 }
@@ -266,7 +267,7 @@ func (h *sessionHandler) roster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *sessionHandler) setSignupStatus(w http.ResponseWriter, r *http.Request) {
-	id, _, err := h.staffOn(r, "signup", h.svc.SignupCourse)
+	id, course, err := h.staffOn(r, "signup", h.svc.SignupCourse)
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
@@ -283,5 +284,7 @@ func (h *sessionHandler) setSignupStatus(w http.ResponseWriter, r *http.Request)
 		httperror.Render(w, r, err)
 		return
 	}
+	h.record(r, courseEntry(audit.SignupStatus, course, "session_signup", id.String(),
+		map[string]any{"status": in.Status}))
 	writeJSON(w, http.StatusOK, signup)
 }

@@ -123,7 +123,7 @@ func (h *reportHandler) completion(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	rows, err := h.svc.CompletionReport(r.Context(), sc, learn.CompletionFilter{
-		CourseID: courseID, Group: strings.TrimSpace(q.Get("group")), Status: strings.TrimSpace(q.Get("status")),
+		CourseID: courseID, Group: learn.NormalizeGroup(q.Get("group")), Status: strings.TrimSpace(q.Get("status")),
 	})
 	if err != nil {
 		httperror.Render(w, r, err)
@@ -162,7 +162,7 @@ func (h *reportHandler) qualifications(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	rows, err := h.svc.QualificationReport(r.Context(), sc.AllOrgs, learn.QualificationFilter{
-		QualificationID: qualID, Group: strings.TrimSpace(q.Get("group")), Status: strings.TrimSpace(q.Get("status")),
+		QualificationID: qualID, Group: learn.NormalizeGroup(q.Get("group")), Status: strings.TrimSpace(q.Get("status")),
 	})
 	if err != nil {
 		httperror.Render(w, r, err)

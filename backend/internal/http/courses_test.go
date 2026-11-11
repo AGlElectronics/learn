@@ -141,6 +141,7 @@ func setupRouterWithFiles(t *testing.T, store learn.ObjectStore) nethttp.Handler
 		DatabaseURL:    dsn,
 		AuthMode:       config.AuthModeDev,
 		DevDefaultUser: "dev-admin",
+		LinkableGroups: []string{"*"},
 	}
 	return httpx.NewRouter(httpx.Deps{
 		Config: cfg,

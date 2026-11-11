@@ -19,6 +19,18 @@ type AccessConfig struct {
 	rolePerms map[string]map[string]struct{}
 	roleDesc  map[string]string
 	bindings  []GroupBinding
+	// homeOrg is the file's top-level organization slug: everyone who signs
+	// in belongs to it ("" = none).
+	homeOrg string
+}
+
+// HomeOrganization returns the organization slug everyone who signs in
+// belongs to ("" when the file names none).
+func (c *AccessConfig) HomeOrganization() string {
+	if c == nil {
+		return ""
+	}
+	return c.homeOrg
 }
 
 // GroupBinding grants Role organization-wide in Organization (a slug) to
@@ -188,7 +200,7 @@ func parseAccessConfig(data []byte) (*AccessConfig, error) {
 		bindings = append(bindings, GroupBinding{Group: b.Group, Role: b.Role, Organization: org})
 	}
 
-	return &AccessConfig{rolePerms: rolePerms, roleDesc: roleDesc, bindings: bindings}, nil
+	return &AccessConfig{rolePerms: rolePerms, roleDesc: roleDesc, bindings: bindings, homeOrg: strings.TrimSpace(f.Organization)}, nil
 }
 
 func defaultRolePermSets() map[string]map[string]struct{} {

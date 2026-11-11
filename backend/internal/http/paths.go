@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/hlog"
 
+	"github.com/AGlElectronics/learn/backend/internal/audit"
 	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/domain"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
@@ -19,12 +20,24 @@ import (
 // learners see their own paths under /me/paths and may join self-enrol
 // paths. sync is nil when Keycloak group sync is off.
 type pathHandler struct {
-	svc  *learn.Service
-	sync *learn.GroupSync
+	svc    *learn.Service
+	sync   *learn.GroupSync
+	audit  *audit.Log
+	policy groupPolicy
 }
 
-func mountPathRoutes(r chi.Router, courses *courseHandler, sync *learn.GroupSync) {
-	h := &pathHandler{svc: courses.svc, sync: sync}
+// pathEntry is an audit entry about something on a learning path.
+func pathEntry(action string, p learn.Path, targetType, targetID string, details map[string]any) audit.Entry {
+	org := p.OrganizationID
+	if details == nil {
+		details = map[string]any{}
+	}
+	details["path_id"] = p.ID
+	return audit.Entry{Action: action, TargetType: targetType, TargetID: targetID, OrganizationID: &org, Details: details}
+}
+
+func mountPathRoutes(r chi.Router, courses *courseHandler, sync *learn.GroupSync, policy groupPolicy) {
+	h := &pathHandler{svc: courses.svc, sync: sync, audit: courses.audit, policy: policy}
 	r.Get("/me/paths", h.mine)
 	r.Get("/paths", h.list)
 	r.Post("/paths", h.create)
@@ -315,6 +328,8 @@ func (h *pathHandler) enrol(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
+	h.audit.Record(r.Context(), actorOf(r), pathEntry(audit.PathEnrolmentAdded, p, "path_enrolment", e.ID.String(),
+		map[string]any{"user_id": in.UserID}))
 	writeJSON(w, http.StatusCreated, e)
 }
 
@@ -366,6 +381,7 @@ func (h *pathHandler) unenrol(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
+	h.audit.Record(r.Context(), actorOf(r), pathEntry(audit.PathEnrolmentGone, p, "path_enrolment", id.String(), nil))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -380,7 +396,7 @@ func (h *pathHandler) listLinks(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"links": links, "sync_available": h.sync != nil})
+	writeJSON(w, http.StatusOK, map[string]any{"links": links, "sync_available": h.sync != nil, "directory": h.policy.directory})
 }
 
 func (h *pathHandler) addLink(w http.ResponseWriter, r *http.Request) {
@@ -389,34 +405,23 @@ func (h *pathHandler) addLink(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
-	var in struct {
-		GroupName string `json:"group_name"`
-	}
+	var in groupLinkBody
 	if err := decodeJSON(r, &in); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
-	name := strings.TrimSpace(in.GroupName)
-	if h.sync != nil && name != "" {
-		groups, err := h.sync.ListGroups(r.Context())
-		if err != nil {
-			httperror.Render(w, r, err)
-			return
-		}
-		found := false
-		for _, g := range groups {
-			found = found || g.Name == name
-		}
-		if !found {
-			httperror.Render(w, r, httperror.Validation("there is no Keycloak group called "+name, nil))
-			return
-		}
-	}
-	link, err := h.svc.AddPathGroupLink(r.Context(), p.ID, name, u.ID)
+	path, err := checkGroupLink(r, h.sync, h.policy, u, p.OrganizationID, in.path())
 	if err != nil {
 		httperror.Render(w, r, err)
 		return
 	}
+	link, err := h.svc.AddPathGroupLink(r.Context(), p.ID, path, u.ID)
+	if err != nil {
+		httperror.Render(w, r, err)
+		return
+	}
+	h.audit.Record(r.Context(), actorOf(r), pathEntry(audit.GroupLinkAdded, p, "path_group_link", link.GroupName,
+		map[string]any{"group_path": link.GroupPath}))
 	resp := map[string]any{"link": link, "sync": nil}
 	if h.sync != nil {
 		res, err := h.sync.SyncPath(r.Context(), p.ID)
@@ -446,6 +451,8 @@ func (h *pathHandler) removeLink(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
+	h.audit.Record(r.Context(), actorOf(r), pathEntry(audit.GroupLinkRemoved, p, "path_group_link", learn.NormalizeGroup(name),
+		map[string]any{"deactivated": n}))
 	writeJSON(w, http.StatusOK, map[string]any{"deactivated": n})
 }
 

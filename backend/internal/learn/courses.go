@@ -57,7 +57,7 @@ func (s *Service) ListMine(ctx context.Context, userID uuid.UUID) ([]CourseSumma
 		SELECT `+prefixedCourseCols("c")+`, e.role
 		  FROM courses c
 		  JOIN enrolments e ON e.course_id = c.id AND e.user_id = $1 AND e.status = 'active'
-		 WHERE c.published OR e.role = '`+domain.EnrolmentTrainer+`'
+		 WHERE c.archived_at IS NULL AND (c.published OR e.role = '`+domain.EnrolmentTrainer+`')
 		 ORDER BY c.title`, userID)
 }
 
@@ -68,19 +68,37 @@ func (s *Service) ListCatalog(ctx context.Context, userID uuid.UUID) ([]CourseSu
 		SELECT `+prefixedCourseCols("c")+`, e.role
 		  FROM courses c
 		  LEFT JOIN enrolments e ON e.course_id = c.id AND e.user_id = $1 AND e.status = 'active'
-		 WHERE c.published AND c.self_enrol
+		 WHERE c.published AND c.self_enrol AND c.archived_at IS NULL
 		 ORDER BY c.title`, userID)
 }
 
 // ListTeach returns courses the user staffs, plus every course of the
 // organizations in manageOrgs (the orgs where they hold course.manage).
-func (s *Service) ListTeach(ctx context.Context, userID uuid.UUID, manageOrgs []uuid.UUID) ([]CourseSummary, error) {
+// archived picks the archived courses instead of the live ones.
+func (s *Service) ListTeach(ctx context.Context, userID uuid.UUID, manageOrgs []uuid.UUID, archived bool) ([]CourseSummary, error) {
 	return s.listSummaries(ctx, userID, `
 		SELECT `+prefixedCourseCols("c")+`, e.role
 		  FROM courses c
 		  LEFT JOIN enrolments e ON e.course_id = c.id AND e.user_id = $1 AND e.status = 'active'
-		 WHERE e.role = '`+domain.EnrolmentTrainer+`' OR c.organization_id = ANY($2)
-		 ORDER BY c.title`, userID, manageOrgs)
+		 WHERE (e.role = '`+domain.EnrolmentTrainer+`' OR c.organization_id = ANY($2))
+		   AND (c.archived_at IS NOT NULL) = $3
+		 ORDER BY c.title`, userID, manageOrgs, archived)
+}
+
+// SetArchived archives or unarchives a course. Archiving twice keeps the
+// first date.
+func (s *Service) SetArchived(ctx context.Context, id, by uuid.UUID, archived bool) (Course, error) {
+	c, err := scanCourse(s.pool.QueryRow(ctx, `
+		UPDATE courses
+		   SET archived_at = CASE WHEN $2 THEN COALESCE(archived_at, now()) END,
+		       archived_by = CASE WHEN $2 THEN COALESCE(archived_by, $3) END,
+		       updated_at = now()
+		 WHERE id = $1
+		 RETURNING `+courseCols, id, archived, by))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Course{}, httperror.NotFound("course")
+	}
+	return c, err
 }
 
 // CreateCourseInput is the validated create payload.

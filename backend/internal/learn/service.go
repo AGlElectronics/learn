@@ -21,6 +21,8 @@ import (
 // Service is safe for concurrent use.
 type Service struct {
 	pool *pgxpool.Pool
+	// feedbackPepper keys the anonymous-feedback dedupe hash.
+	feedbackPepper []byte
 }
 
 // NewService constructs the course service.
@@ -45,7 +47,13 @@ type Course struct {
 	Languages   []string `json:"languages"`
 	// Lang is the language this payload was served in (learner views only).
 	Lang string `json:"lang,omitempty"`
+	// ArchivedAt is set while the course is archived: hidden from learners
+	// and course lists, read-only for staff.
+	ArchivedAt *time.Time `json:"archived_at"`
 }
+
+// Archived reports whether the course is archived.
+func (c Course) Archived() bool { return c.ArchivedAt != nil }
 
 // Progress is completed pages over total pages for one person on one course.
 type Progress struct {
@@ -138,9 +146,10 @@ type Enrolment struct {
 	UserID      uuid.UUID `json:"user_id"`
 	Role        string    `json:"role"`
 	DisplayName string    `json:"display_name"`
-	Email       string    `json:"email"`
-	CreatedAt   time.Time `json:"created_at"`
-	Progress    Progress  `json:"progress"`
+	// Email is left out for callers who may not see it (trainers).
+	Email     string    `json:"email,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	Progress  Progress  `json:"progress"`
 	// Source is manual or group (created by the Keycloak group sync);
 	// Status inactive means they left the synced group: no access, progress
 	// kept, rejoining reactivates.
@@ -152,19 +161,22 @@ type Enrolment struct {
 	Overdue bool       `json:"overdue"`
 }
 
-// Person is a users row projected for the enrolment picker.
+// Person is a users row projected for the enrolment picker. Email is
+// empty for callers who may not see it. A person found only in the
+// identity provider's directory has no ID yet and carries DirectoryID.
 type Person struct {
-	ID          uuid.UUID `json:"id"`
-	DisplayName string    `json:"display_name"`
-	Email       string    `json:"email"`
+	ID          *uuid.UUID `json:"id"`
+	DisplayName string     `json:"display_name"`
+	Email       string     `json:"email,omitempty"`
+	DirectoryID string     `json:"directory_id,omitempty"`
 }
 
-const courseCols = `id, organization_id, title, summary, published, self_enrol, created_by, created_at, updated_at, default_lang, languages`
+const courseCols = `id, organization_id, title, summary, published, self_enrol, created_by, created_at, updated_at, default_lang, languages, archived_at`
 
 // courseDest is the scan destination list matching courseCols.
 func courseDest(c *Course) []any {
 	return []any{&c.ID, &c.OrganizationID, &c.Title, &c.Summary, &c.Published, &c.SelfEnrol, &c.CreatedBy,
-		&c.CreatedAt, &c.UpdatedAt, &c.DefaultLang, &c.Languages}
+		&c.CreatedAt, &c.UpdatedAt, &c.DefaultLang, &c.Languages, &c.ArchivedAt}
 }
 
 func scanCourse(row pgx.Row) (Course, error) {
@@ -193,11 +205,13 @@ func (s *Service) IsStaff(ctx context.Context, courseID, userID uuid.UUID) (bool
 }
 
 // EnrolmentRole returns the user's enrolment role on a course ("" if none,
-// or if the enrolment is inactive because they left its synced group).
+// if the enrolment is inactive because they left its synced group, or if
+// the course is archived: an archived course is closed to learners).
 func (s *Service) EnrolmentRole(ctx context.Context, courseID, userID uuid.UUID) (string, error) {
 	var role string
-	err := s.pool.QueryRow(ctx,
-		`SELECT role FROM enrolments WHERE course_id = $1 AND user_id = $2 AND status = 'active'`,
+	err := s.pool.QueryRow(ctx, `
+		SELECT e.role FROM enrolments e JOIN courses c ON c.id = e.course_id
+		 WHERE e.course_id = $1 AND e.user_id = $2 AND e.status = 'active' AND c.archived_at IS NULL`,
 		courseID, userID,
 	).Scan(&role)
 	if errors.Is(err, pgx.ErrNoRows) {

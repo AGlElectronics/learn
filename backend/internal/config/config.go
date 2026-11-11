@@ -102,19 +102,53 @@ type Config struct {
 	KeycloakClientID     string
 	KeycloakClientSecret string
 
+	// GroupDirectory is GROUP_DIRECTORY: keycloak reads groups and people
+	// from the Keycloak Admin API (when KEYCLOAK_* is set); off never does,
+	// whatever KEYCLOAK_* says (an identity provider without that API).
+	GroupDirectory GroupDirectoryMode
+	// LinkableGroups is LEARN_LINKABLE_GROUPS: the groups trainers may see
+	// and link to courses and paths. Entries are full paths; "/a/*" is
+	// every group below /a, "*" is every group. Holders of course.manage
+	// may link any group.
+	LinkableGroups []string
+
 	// LearnServiceToken authenticates service-to-service calls (HR -> Learn).
 	LearnServiceToken string
 
-	// TelegramBotToken enables the (stub) Telegram notification channel.
+	// FeedbackPepper is mixed into the hash that stops a person giving
+	// anonymous feedback twice (LEARN_FEEDBACK_PEPPER, a secret).
+	FeedbackPepper string
+
+	// TelegramBotToken enables the Telegram notification channel; the
+	// module setting telegram_enabled switches delivery on and off.
 	TelegramBotToken string
+	// TelegramAPIURL is the Bot API origin (TELEGRAM_API_URL).
+	TelegramAPIURL string
 }
+
+// GroupDirectoryMode is GROUP_DIRECTORY.
+type GroupDirectoryMode string
+
+const (
+	GroupDirectoryKeycloak GroupDirectoryMode = "keycloak"
+	GroupDirectoryOff      GroupDirectoryMode = "off"
+)
+
+// DevFeedbackPepper is used in development when LEARN_FEEDBACK_PEPPER is
+// unset. Never valid outside development.
+const DevFeedbackPepper = "learn-dev-only-feedback-pepper"
+
+// Development reports whether APP_ENV is development.
+func (c *Config) Development() bool { return c.AppEnv == "development" }
 
 // S3Enabled reports whether object storage is configured.
 func (c *Config) S3Enabled() bool { return strings.TrimSpace(c.S3Endpoint) != "" }
 
-// KeycloakAdminEnabled reports whether the Keycloak Admin API client is configured.
+// KeycloakAdminEnabled reports whether the Keycloak Admin API client is
+// configured and the group directory is not switched off.
 func (c *Config) KeycloakAdminEnabled() bool {
-	return c.KeycloakBaseURL != "" && c.KeycloakRealm != "" && c.KeycloakClientID != "" && c.KeycloakClientSecret != ""
+	return c.GroupDirectory != GroupDirectoryOff &&
+		c.KeycloakBaseURL != "" && c.KeycloakRealm != "" && c.KeycloakClientID != "" && c.KeycloakClientSecret != ""
 }
 
 // Load reads environment variables (plus an optional .env file) and returns
@@ -172,8 +206,16 @@ func Load() (*Config, error) {
 		KeycloakClientID:     getEnv("KEYCLOAK_CLIENT_ID", ""),
 		KeycloakClientSecret: getEnv("KEYCLOAK_CLIENT_SECRET", ""),
 
+		GroupDirectory: GroupDirectoryMode(strings.ToLower(getEnv("GROUP_DIRECTORY", string(GroupDirectoryKeycloak)))),
+		LinkableGroups: splitCSV(getEnv("LEARN_LINKABLE_GROUPS", "/learn/*")),
+
 		LearnServiceToken: getEnv("LEARN_SERVICE_TOKEN", ""),
+		FeedbackPepper:    getEnv("LEARN_FEEDBACK_PEPPER", ""),
 		TelegramBotToken:  getEnv("TELEGRAM_BOT_TOKEN", ""),
+		TelegramAPIURL:    strings.TrimRight(getEnv("TELEGRAM_API_URL", "https://api.telegram.org"), "/"),
+	}
+	if cfg.FeedbackPepper == "" && cfg.Development() {
+		cfg.FeedbackPepper = DevFeedbackPepper
 	}
 
 	trusted, err := clientip.ParseCIDRs(getEnv("TRUSTED_PROXY_CIDRS", clientip.DefaultTrustedProxies))
@@ -212,8 +254,59 @@ func (c *Config) validate() error {
 		errs = append(errs, fmt.Sprintf("AUTH_MODE must be 'oidc' or 'dev', got %q", c.AuthMode))
 	}
 
+	switch c.GroupDirectory {
+	case GroupDirectoryKeycloak, GroupDirectoryOff:
+	default:
+		errs = append(errs, fmt.Sprintf("GROUP_DIRECTORY must be 'keycloak' or 'off', got %q", c.GroupDirectory))
+	}
+
+	if !c.Development() {
+		if c.LearnServiceToken != "" {
+			if err := CheckSecret(c.LearnServiceToken); err != nil {
+				errs = append(errs, "LEARN_SERVICE_TOKEN "+err.Error())
+			}
+		}
+		switch {
+		case c.FeedbackPepper == "":
+			errs = append(errs, "LEARN_FEEDBACK_PEPPER is required outside development (APP_ENV="+c.AppEnv+")")
+		case c.FeedbackPepper == DevFeedbackPepper:
+			errs = append(errs, "LEARN_FEEDBACK_PEPPER is the development value; generate a real one")
+		default:
+			if err := CheckSecret(c.FeedbackPepper); err != nil {
+				errs = append(errs, "LEARN_FEEDBACK_PEPPER "+err.Error())
+			}
+		}
+	}
+
 	if len(errs) > 0 {
 		return errors.New("invalid config: " + strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// MinSecretLength is the shortest accepted shared secret outside
+// development (32 characters: `openssl rand -hex 32` gives 64).
+const MinSecretLength = 32
+
+// CheckSecret rejects a shared secret that is short, uses few distinct
+// characters, or is an obvious placeholder. It is a guard against
+// copy-pasted example values, not a full entropy estimate.
+func CheckSecret(s string) error {
+	if len(s) < MinSecretLength {
+		return fmt.Errorf("must be at least %d characters (generate one with: openssl rand -hex 32)", MinSecretLength)
+	}
+	distinct := map[rune]struct{}{}
+	for _, r := range s {
+		distinct[r] = struct{}{}
+	}
+	if len(distinct) < 10 {
+		return errors.New("has too few different characters to be random (generate one with: openssl rand -hex 32)")
+	}
+	lower := strings.ToLower(s)
+	for _, p := range []string{"change-me", "changeme", "dev-token", "dev-only", "example", "password", "secret"} {
+		if strings.Contains(lower, p) {
+			return fmt.Errorf("looks like a placeholder (contains %q); generate a real one", p)
+		}
 	}
 	return nil
 }

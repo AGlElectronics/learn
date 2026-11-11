@@ -57,10 +57,13 @@ type PathEnrolment struct {
 	Complete     bool       `json:"complete"`
 }
 
-// PathGroupLink is one Keycloak group linked to a path.
+// PathGroupLink is one Keycloak group linked to a path; GroupName and
+// GroupPath as on GroupLink.
 type PathGroupLink struct {
 	PathID        uuid.UUID  `json:"path_id"`
 	GroupName     string     `json:"group_name"`
+	GroupPath     string     `json:"group_path"`
+	PathResolved  bool       `json:"path_resolved"`
 	CreatedAt     time.Time  `json:"created_at"`
 	LastSyncedAt  *time.Time `json:"last_synced_at"`
 	LastSyncError string     `json:"last_sync_error"`
@@ -826,7 +829,7 @@ func (s *Service) MyPaths(ctx context.Context, userID uuid.UUID) ([]MyPath, []Pa
 // ListPathGroupLinks returns the groups linked to a path.
 func (s *Service) ListPathGroupLinks(ctx context.Context, pathID uuid.UUID) ([]PathGroupLink, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT l.path_id, l.group_name, l.created_at, l.last_synced_at, l.last_sync_error,
+		SELECT l.path_id, l.group_name, l.group_path, l.path_resolved, l.created_at, l.last_synced_at, l.last_sync_error,
 		       (SELECT count(*) FROM user_groups ug WHERE ug.group_name = l.group_name),
 		       (SELECT count(*) FROM path_enrolments pe
 		          JOIN user_groups ug ON ug.user_id = pe.user_id AND ug.group_name = l.group_name
@@ -841,7 +844,7 @@ func (s *Service) ListPathGroupLinks(ctx context.Context, pathID uuid.UUID) ([]P
 	out := []PathGroupLink{}
 	for rows.Next() {
 		var l PathGroupLink
-		if err := rows.Scan(&l.PathID, &l.GroupName, &l.CreatedAt, &l.LastSyncedAt, &l.LastSyncError,
+		if err := rows.Scan(&l.PathID, &l.GroupName, &l.GroupPath, &l.PathResolved, &l.CreatedAt, &l.LastSyncedAt, &l.LastSyncError,
 			&l.Members, &l.Active); err != nil {
 			return nil, err
 		}
@@ -921,14 +924,16 @@ func deactivatePathMembers(ctx context.Context, tx dbtx, pathID uuid.UUID, where
 // AddPathGroupLink links a group to a path and enrols the members Learn
 // already knows about. The handler runs a Keycloak sync afterwards when
 // one is configured.
-func (s *Service) AddPathGroupLink(ctx context.Context, pathID uuid.UUID, group string, createdBy uuid.UUID) (PathGroupLink, error) {
-	group = strings.TrimSpace(group)
+func (s *Service) AddPathGroupLink(ctx context.Context, pathID uuid.UUID, path string, createdBy uuid.UUID) (PathGroupLink, error) {
+	group := NormalizeGroup(path)
 	if group == "" {
-		return PathGroupLink{}, httperror.Validation("group_name is required", nil)
+		return PathGroupLink{}, httperror.Validation("group_path is required", nil)
 	}
 	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO path_group_links (path_id, group_name, created_by) VALUES ($1, $2, $3)`,
-			pathID, group, createdBy); err != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO path_group_links (path_id, group_name, group_path, path_resolved, created_by)
+			VALUES ($1, $2, $3, TRUE, $4)`,
+			pathID, group, displayPath(path), createdBy); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				return httperror.Conflict("this group is already linked to the path")
@@ -954,6 +959,7 @@ func (s *Service) getPathGroupLink(ctx context.Context, pathID uuid.UUID, group 
 	if err != nil {
 		return PathGroupLink{}, err
 	}
+	group = NormalizeGroup(group)
 	for _, l := range links {
 		if l.GroupName == group {
 			return l, nil
@@ -965,6 +971,7 @@ func (s *Service) getPathGroupLink(ctx context.Context, pathID uuid.UUID, group 
 // RemovePathGroupLink unlinks a group. Group path members in no remaining
 // linked group (as far as Learn knows) turn inactive; nothing is deleted.
 func (s *Service) RemovePathGroupLink(ctx context.Context, pathID uuid.UUID, group string) (int, error) {
+	group = NormalizeGroup(group)
 	var n int
 	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `DELETE FROM path_group_links WHERE path_id = $1 AND group_name = $2`, pathID, group)
@@ -1056,11 +1063,11 @@ func (g *GroupSync) syncPathsAll(ctx context.Context, cache map[string]memberLoo
 // nobody is deactivated this round.
 func (g *GroupSync) syncPath(ctx context.Context, pathID uuid.UUID, cache map[string]memberLookup) (GroupSyncResult, error) {
 	res := GroupSyncResult{Errors: []string{}}
-	rows, err := g.svc.pool.Query(ctx, `SELECT group_name FROM path_group_links WHERE path_id = $1 ORDER BY group_name`, pathID)
+	rows, err := g.svc.pool.Query(ctx, `SELECT group_name, group_path FROM path_group_links WHERE path_id = $1 ORDER BY group_name`, pathID)
 	if err != nil {
 		return res, err
 	}
-	groups, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	groups, err := collectLinkedGroups(rows)
 	if err != nil {
 		return res, err
 	}
@@ -1072,13 +1079,13 @@ func (g *GroupSync) syncPath(ctx context.Context, pathID uuid.UUID, cache map[st
 		m := g.members(ctx, group, cache)
 		if m.err != nil {
 			complete = false
-			linkErr[group] = m.err.Error()
-			res.Errors = append(res.Errors, group+": "+m.err.Error())
+			linkErr[group.key] = m.err.Error()
+			res.Errors = append(res.Errors, group.path+": "+m.err.Error())
 			continue
 		}
 		res.Groups++
 		res.UsersCreated += m.created
-		perGroup[group] = m.ids
+		perGroup[group.key] = m.ids
 		for _, id := range m.ids {
 			all[id] = true
 		}
@@ -1093,16 +1100,8 @@ func (g *GroupSync) syncPath(ctx context.Context, pathID uuid.UUID, cache map[st
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "learn-path:"+pathID.String()); err != nil {
 			return err
 		}
-		for group, ids := range perGroup {
-			if _, err := tx.Exec(ctx, `DELETE FROM user_groups WHERE group_name = $1 AND NOT (user_id = ANY($2))`, group, ids); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO user_groups (user_id, group_name)
-				SELECT u, $1 FROM unnest($2::uuid[]) AS u
-				ON CONFLICT (user_id, group_name) DO UPDATE SET synced_at = now()`, group, ids); err != nil {
-				return err
-			}
+		if err := refreshGroupCache(ctx, tx, perGroup); err != nil {
+			return err
 		}
 		var err error
 		res.Enrolled, res.Reactivated, err = enrolPathGroupMembers(ctx, tx, pathID, memberIDs)
@@ -1118,7 +1117,7 @@ func (g *GroupSync) syncPath(ctx context.Context, pathID uuid.UUID, cache map[st
 		for _, group := range groups {
 			if _, err := tx.Exec(ctx, `
 				UPDATE path_group_links SET last_synced_at = now(), last_sync_error = $3
-				 WHERE path_id = $1 AND group_name = $2`, pathID, group, linkErr[group]); err != nil {
+				 WHERE path_id = $1 AND group_name = $2`, pathID, group.key, linkErr[group.key]); err != nil {
 				return err
 			}
 		}

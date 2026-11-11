@@ -65,6 +65,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
 
+	"github.com/AGlElectronics/learn/backend/internal/audit"
 	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/brand"
 	"github.com/AGlElectronics/learn/backend/internal/clientip"
@@ -93,8 +94,11 @@ type Deps struct {
 	Keycloak *keycloakadmin.Client
 	// Files is object storage for the media library; nil = uploads off (503).
 	Files learn.ObjectStore
-	// Notifier delivers reminders (email, Telegram stub); nil = none.
+	// Notifier delivers reminders (email, Telegram); nil = none.
 	Notifier *notify.Notifier
+	// Limiters overrides the rate limiter of a route group; the rest use
+	// the defaults (see ratelimit.go).
+	Limiters map[LimitName]Limiter
 }
 
 // NewRouter builds the chi router with middleware, CORS, and routes.
@@ -137,9 +141,14 @@ func NewRouter(deps Deps, version string) http.Handler {
 		den = denlink.New(deps.Pool, denlink.Config{Slug: "learn", Version: version, Mode: deps.Config.DenMode}, deps.Logger)
 	}
 	brandH := &brandHandler{provider: deps.Brand, den: den}
-	courses := &courseHandler{svc: learn.NewService(deps.Pool)}
+	audits := audit.New(deps.Pool, deps.Logger)
+	courses := &courseHandler{svc: learn.NewService(deps.Pool), audit: audits}
+	courses.svc.SetFeedbackPepper(deps.Config.FeedbackPepper)
 	resolver.SetGroupsHook(courses.svc.ApplyLoginGroups)
 	groupSync := learn.NewGroupSync(courses.svc, deps.Keycloak, learn.GroupSyncIssuer(deps.Config), deps.Logger)
+	courses.directory = groupSync
+	policy := newGroupPolicy(deps.Config)
+	limits := newLimitSet(deps.Limiters)
 	reminders := learn.NewReminders(courses.svc, deps.Notifier, deps.Config.PublicBaseURL, OrgNameFunc(deps.Brand, den), deps.Logger)
 
 	// Orchestrator probes — unauthenticated, served from the root so they
@@ -174,12 +183,14 @@ func NewRouter(deps Deps, version string) http.Handler {
 				secure.Route("/den", func(dr chi.Router) {
 					dr.Use(requirePermission(domain.PermSettingsManage))
 					dr.Get("/", den.StatusHandler)
-					dr.Post("/pair", den.PairHandler)
-					dr.Post("/sync", den.SyncHandler)
-					dr.Delete("/pair", den.UnpairHandler)
+					dr.With(auditOnSuccess(audits, audit.DenPaired, "den_link")).Post("/pair", den.PairHandler)
+					dr.With(auditOnSuccess(audits, audit.DenSynced, "den_link")).Post("/sync", den.SyncHandler)
+					dr.With(auditOnSuccess(audits, audit.DenUnpaired, "den_link")).Delete("/pair", den.UnpairHandler)
 				})
 
-				secure.Get("/users", courses.searchPeople)
+				secure.With(limits.hook(LimitPeopleSearch)).Get("/users", courses.searchPeople)
+				secure.Get("/course-staff", courses.listCourseStaff)
+				secure.With(requirePermission(domain.PermSettingsManage)).Get("/audit", auditListHandler(audits))
 
 				secure.Get("/courses/mine", courses.listMine)
 				secure.Get("/courses/catalog", courses.listCatalog)
@@ -191,10 +202,12 @@ func NewRouter(deps Deps, version string) http.Handler {
 					cr.Patch("/", courses.update)
 					cr.Post("/publish", courses.setPublished(true))
 					cr.Post("/unpublish", courses.setPublished(false))
+					cr.Post("/archive", courses.setArchived(true))
+					cr.Post("/unarchive", courses.setArchived(false))
 					cr.Post("/sections", courses.createSection)
 					cr.Get("/enrolments", courses.listEnrolments)
 					cr.Post("/enrolments", courses.enrol)
-					cr.Post("/enrol", courses.selfEnrol)
+					cr.With(limits.hook(LimitSelfEnrol)).Post("/enrol", courses.selfEnrol)
 				})
 
 				secure.Patch("/sections/{section}", courses.updateSection)
@@ -210,15 +223,15 @@ func NewRouter(deps Deps, version string) http.Handler {
 				mountQuizRoutes(secure, courses)
 				mountMediaRoutes(secure, courses, deps.Files)
 				mountRuleRoutes(secure, courses)
-				mountSessionRoutes(secure, courses, deps.Config.PublicBaseURL)
-				mountGroupRoutes(secure, courses, groupSync)
+				mountSessionRoutes(secure, courses, deps.Config.PublicBaseURL, limits)
+				mountGroupRoutes(secure, courses, groupSync, policy)
 				mountStatsRoutes(secure, courses)
-				mountFeedbackRoutes(secure, courses)
+				mountFeedbackRoutes(secure, courses, limits)
 				mountImportRoutes(secure, courses, deps.Files)
 				mountQualificationRoutes(secure, courses, deps.Config.PublicBaseURL)
 				mountReportRoutes(secure, courses)
 				mountCopyRoutes(secure, courses)
-				mountPathRoutes(secure, courses, groupSync)
+				mountPathRoutes(secure, courses, groupSync, policy)
 				mountTeamBoardRoutes(secure, courses)
 				mountTranslationRoutes(secure, courses)
 				mountChannelRoutes(secure, courses.svc, deps.Notifier)

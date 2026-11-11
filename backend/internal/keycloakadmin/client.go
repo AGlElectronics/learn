@@ -164,23 +164,25 @@ func (c *Client) children(ctx context.Context, token, groupID string) ([]kcGroup
 	return subs, err
 }
 
-// GroupMembers returns the direct members of the group named groupName (a
-// plain name, or a full path starting with "/"). ErrGroupNotFound if absent.
-func (c *Client) GroupMembers(ctx context.Context, groupName string) ([]Member, error) {
-	groupName = strings.TrimSpace(groupName)
+// GroupMembers returns the direct members of the group at groupPath, a full
+// path such as "/learn/cohort-a". Paths compare like token groups do
+// (ignoring case and the leading "/"), so a top-level group matches its
+// plain name too. ErrGroupNotFound if absent.
+func (c *Client) GroupMembers(ctx context.Context, groupPath string) ([]Member, error) {
+	want := pathKey(groupPath)
 	groups, err := c.ListGroups(ctx)
 	if err != nil {
 		return nil, err
 	}
 	id := ""
 	for _, g := range groups {
-		if (strings.HasPrefix(groupName, "/") && g.Path == groupName) || g.Name == groupName {
+		if pathKey(g.Path) == want {
 			id = g.ID
 			break
 		}
 	}
 	if id == "" {
-		return nil, fmt.Errorf("%w: %q", ErrGroupNotFound, groupName)
+		return nil, fmt.Errorf("%w: %q", ErrGroupNotFound, groupPath)
 	}
 	var out []Member
 	err = c.withFreshTokenRetry(ctx, func(token string) error {
@@ -192,6 +194,52 @@ func (c *Client) GroupMembers(ctx context.Context, groupName string) ([]Member, 
 		for _, u := range users {
 			out = append(out, Member(u))
 		}
+		return nil
+	})
+	return out, err
+}
+
+// SearchUsers returns up to max enabled users whose username, name or email
+// contains q (Keycloak's search parameter).
+func (c *Client) SearchUsers(ctx context.Context, q string, max int) ([]Member, error) {
+	if max <= 0 || max > 50 {
+		max = 20
+	}
+	var out []Member
+	err := c.withFreshTokenRetry(ctx, func(token string) error {
+		var users []kcUser
+		p := "/users?briefRepresentation=true&enabled=true&search=" + url.QueryEscape(q) + "&max=" + strconv.Itoa(max)
+		if err := c.getJSON(ctx, token, p, &users); err != nil {
+			return err
+		}
+		out = make([]Member, 0, len(users))
+		for _, u := range users {
+			out = append(out, Member(u))
+		}
+		return nil
+	})
+	return out, err
+}
+
+// ErrUserNotFound is returned by GetUser for an unknown user id.
+var ErrUserNotFound = errors.New("keycloak user not found")
+
+// GetUser returns one user by Keycloak id.
+func (c *Client) GetUser(ctx context.Context, id string) (Member, error) {
+	var out Member
+	err := c.withFreshTokenRetry(ctx, func(token string) error {
+		var u kcUser
+		if err := c.getJSON(ctx, token, "/users/"+url.PathEscape(id), &u); err != nil {
+			var ae *AdminError
+			if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+				return fmt.Errorf("%w: %q", ErrUserNotFound, id)
+			}
+			return err
+		}
+		if u.ID == "" {
+			return fmt.Errorf("%w: %q", ErrUserNotFound, id)
+		}
+		out = Member(u)
 		return nil
 	})
 	return out, err
@@ -325,6 +373,12 @@ func (c *Client) getJSON(ctx context.Context, token, path string, dest any) erro
 		return fmt.Errorf("keycloak admin decode %s: %w", path, err)
 	}
 	return nil
+}
+
+// pathKey is the comparison form of a group path: trimmed, one leading "/"
+// dropped, lower-case.
+func pathKey(p string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(p), "/"))
 }
 
 func truncate(s string, n int) string {

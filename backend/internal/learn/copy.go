@@ -154,8 +154,8 @@ func (s *Service) CopyCourse(ctx context.Context, sourceID, userID uuid.UUID, in
 		}
 		if in.IncludeGroupLinks {
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO course_group_links (course_id, group_name, role, created_by)
-				SELECT $2, group_name, role, $3 FROM course_group_links WHERE course_id = $1`,
+				INSERT INTO course_group_links (course_id, group_name, group_path, path_resolved, role, created_by)
+				SELECT $2, group_name, group_path, path_resolved, role, $3 FROM course_group_links WHERE course_id = $1`,
 				sourceID, c.ID, userID); err != nil {
 				return err
 			}

@@ -96,6 +96,13 @@ func (f *fakeRealm) handler() nethttp.Handler {
 // the fake realm. It also returns the pool and client for worker checks.
 func setupGroupRouter(t *testing.T, realm *fakeRealm) (nethttp.Handler, *pgxpool.Pool, *keycloakadmin.Client) {
 	t.Helper()
+	return setupGroupRouterWith(t, realm, nil)
+}
+
+// setupGroupRouterWith is setupGroupRouter with a config tweak (nil = none).
+// Trainers may link every group unless the tweak says otherwise.
+func setupGroupRouterWith(t *testing.T, realm *fakeRealm, tweak func(*config.Config)) (nethttp.Handler, *pgxpool.Pool, *keycloakadmin.Client) {
+	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL not set; skipping DB-backed tests")
@@ -149,6 +156,10 @@ func setupGroupRouter(t *testing.T, realm *fakeRealm) (nethttp.Handler, *pgxpool
 		AuthMode:       config.AuthModeDev,
 		DevDefaultUser: "dev-admin",
 		OIDCIssuerURL:  "dev",
+		LinkableGroups: []string{"*"},
+	}
+	if tweak != nil {
+		tweak(cfg)
 	}
 	return httpx.NewRouter(httpx.Deps{
 		Config:   cfg,

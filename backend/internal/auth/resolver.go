@@ -30,6 +30,12 @@ type Resolver struct {
 	pool   *pgxpool.Pool
 	access *AccessConfig
 	orgIDs sync.Map // organization slug -> uuid.UUID
+	// orgsSeen remembers user/organization sets already recorded by this
+	// process, so a signed-in request costs no extra write.
+	orgsSeen sync.Map
+	// subjectsSeen remembers (issuer, subject) pairs adoptSyncedUser has
+	// already handled.
+	subjectsSeen sync.Map
 	// groupsHook receives the caller's IdP groups on every request (see
 	// SetGroupsHook); nil = off.
 	groupsHook GroupsHook
@@ -54,7 +60,7 @@ func (r *Resolver) LoadOrProvisionDevUser(ctx context.Context, name string, grou
 	display := displayFromDevHeader(name)
 	email := name + "@learn.local"
 
-	userID, err := r.upsertUser(ctx, "dev", name, display, &email)
+	userID, err := r.upsertUser(ctx, "dev", name, display, &email, "")
 	if err != nil {
 		return nil, fmt.Errorf("provision dev user: %w", err)
 	}
@@ -63,6 +69,9 @@ func (r *Resolver) LoadOrProvisionDevUser(ctx context.Context, name string, grou
 	memberships, err := r.groupMemberships(ctx, groups)
 	if err != nil {
 		return nil, fmt.Errorf("resolve dev group bindings: %w", err)
+	}
+	if err := r.recordOrganizations(ctx, userID, memberships); err != nil {
+		return nil, fmt.Errorf("record organizations: %w", err)
 	}
 	return r.buildUser(userID, "dev", name, display, email, memberships), nil
 }
@@ -80,7 +89,11 @@ func (r *Resolver) LoadOrProvisionOIDCUser(ctx context.Context, claims *OIDCClai
 	if e := strings.TrimSpace(claims.Email); e != "" {
 		emailPtr = &e
 	}
-	userID, err := r.upsertUser(ctx, claims.Issuer, claims.Subject, display, emailPtr)
+	username := strings.TrimSpace(claims.PreferredUsername)
+	if err := r.adoptSyncedUser(ctx, claims.Issuer, claims.Subject, username); err != nil {
+		return nil, fmt.Errorf("adopt synced user: %w", err)
+	}
+	userID, err := r.upsertUser(ctx, claims.Issuer, claims.Subject, display, emailPtr, username)
 	if err != nil {
 		return nil, fmt.Errorf("upsert oidc user: %w", err)
 	}
@@ -90,6 +103,9 @@ func (r *Resolver) LoadOrProvisionOIDCUser(ctx context.Context, claims *OIDCClai
 	if err != nil {
 		return nil, fmt.Errorf("resolve group bindings: %w", err)
 	}
+	if err := r.recordOrganizations(ctx, userID, memberships); err != nil {
+		return nil, fmt.Errorf("record organizations: %w", err)
+	}
 
 	email := ""
 	if emailPtr != nil {
@@ -98,25 +114,57 @@ func (r *Resolver) LoadOrProvisionOIDCUser(ctx context.Context, claims *OIDCClai
 	return r.buildUser(userID, claims.Issuer, claims.Subject, display, email, memberships), nil
 }
 
+// adoptSyncedUser handles an IdP whose token `sub` is not the directory's
+// user id. The group sync stores people it has not seen sign in under
+// subject = directory id; on their first sign-in, a row of the same issuer
+// that has never signed in, has a directory id and the token's
+// preferred_username takes the token's subject instead of a second row
+// being created. Runs once per subject per process.
+func (r *Resolver) adoptSyncedUser(ctx context.Context, issuer, subject, username string) error {
+	if username == "" {
+		return nil
+	}
+	key := issuer + "\x00" + subject
+	if _, done := r.subjectsSeen.Load(key); done {
+		return nil
+	}
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE users SET subject = $2, updated_at = now()
+		 WHERE id = (SELECT id FROM users
+		              WHERE issuer = $1 AND subject <> $2 AND last_login_at IS NULL
+		                AND idp_user_id IS NOT NULL AND erased_at IS NULL
+		                AND lower(idp_username) = lower($3)
+		              LIMIT 1)
+		   AND NOT EXISTS (SELECT 1 FROM users WHERE issuer = $1 AND subject = $2)`,
+		issuer, subject, username); err != nil {
+		return err
+	}
+	r.subjectsSeen.Store(key, struct{}{})
+	return nil
+}
+
 // upsertUser looks up the local user by (issuer, subject). If absent, a
-// fresh users row is created. Metadata (display_name, email, last_login_at)
-// is refreshed on every call.
+// fresh users row is created. Metadata (display_name, email, IdP username,
+// last_login_at) is refreshed on every call; an empty username keeps the
+// stored one. The username lets the group sync match the person later.
 func (r *Resolver) upsertUser(
 	ctx context.Context,
 	issuer, subject, display string,
 	email *string,
+	username string,
 ) (uuid.UUID, error) {
 	var userID uuid.UUID
 	err := r.pool.QueryRow(ctx,
-		`INSERT INTO users (issuer, subject, display_name, email, last_login_at)
-		 VALUES ($1, $2, $3, $4, now())
+		`INSERT INTO users (issuer, subject, display_name, email, idp_username, last_login_at)
+		 VALUES ($1, $2, $3, $4, NULLIF($5, ''), now())
 		 ON CONFLICT (issuer, subject) DO UPDATE
 		    SET display_name  = EXCLUDED.display_name,
 		        email         = COALESCE(EXCLUDED.email, users.email),
+		        idp_username  = COALESCE(EXCLUDED.idp_username, users.idp_username),
 		        last_login_at = now(),
 		        updated_at    = now()
 		 RETURNING id`,
-		issuer, subject, display, email,
+		issuer, subject, display, email, username,
 	).Scan(&userID)
 	if err != nil {
 		return uuid.Nil, err
@@ -209,6 +257,43 @@ func (r *Resolver) groupMemberships(ctx context.Context, groups []string) ([]Mem
 		}
 	}
 	return out, nil
+}
+
+// recordOrganizations notes that the user belongs to the access config's
+// home organization and to every organization a binding gave them a role
+// in. The people picker searches only these.
+func (r *Resolver) recordOrganizations(ctx context.Context, userID uuid.UUID, memberships []Membership) error {
+	ids := make([]uuid.UUID, 0, len(memberships)+1)
+	if slug := r.access.HomeOrganization(); slug != "" {
+		id, ok, err := r.orgIDBySlug(ctx, slug)
+		if err != nil {
+			return err
+		}
+		if ok {
+			ids = append(ids, id)
+		}
+	}
+	for _, m := range memberships {
+		ids = append(ids, m.OrganizationID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	key := userID.String()
+	for _, id := range ids {
+		key += ":" + id.String()
+	}
+	if _, done := r.orgsSeen.Load(key); done {
+		return nil
+	}
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO user_organizations (user_id, organization_id)
+		SELECT $1, o FROM unnest($2::uuid[]) AS o
+		ON CONFLICT DO NOTHING`, userID, ids); err != nil {
+		return err
+	}
+	r.orgsSeen.Store(key, struct{}{})
+	return nil
 }
 
 func (r *Resolver) orgIDBySlug(ctx context.Context, slug string) (uuid.UUID, bool, error) {

@@ -48,6 +48,9 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 	return l.counts[key] <= l.limit
 }
 
+// Allow implements Limiter.
+func (l *rateLimiter) Allow(key string) bool { return l.allow(key, time.Now()) }
+
 func (l *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !l.allow(clientip.FromRequest(r), time.Now()) {

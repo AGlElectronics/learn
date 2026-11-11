@@ -133,7 +133,11 @@ func (r *Resolver) LoadOrProvisionPortalUser(ctx context.Context, claims *OIDCCl
 	if email != "" {
 		emailPtr = &email
 	}
-	userID, err := r.upsertUser(ctx, claims.Issuer, claims.Subject, display, emailPtr)
+	username := strings.TrimSpace(claims.PreferredUsername)
+	if err := r.adoptSyncedUser(ctx, claims.Issuer, claims.Subject, username); err != nil {
+		return nil, fmt.Errorf("adopt synced user: %w", err)
+	}
+	userID, err := r.upsertUser(ctx, claims.Issuer, claims.Subject, display, emailPtr, username)
 	if err != nil {
 		return nil, fmt.Errorf("upsert oidc user: %w", err)
 	}

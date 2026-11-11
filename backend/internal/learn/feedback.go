@@ -2,6 +2,7 @@ package learn
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -16,11 +17,15 @@ import (
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 )
 
-// feedbackPepper is mixed into the dedupe hash so it isn't a bare hash of
-// ids that appear elsewhere in the database.
-const feedbackPepper = "learn-feedback-dedupe-v1:9f1c2e7a"
-
 const maxFeedbackComment = 4000
+
+// SetFeedbackPepper sets the secret (LEARN_FEEDBACK_PEPPER) that keys the
+// anonymous-feedback dedupe hash, so the hash can't be recomputed from ids
+// that appear elsewhere in the database. Changing it lets everyone give
+// anonymous feedback once more. Call before serving requests.
+func (s *Service) SetFeedbackPepper(pepper string) {
+	s.feedbackPepper = []byte(pepper)
+}
 
 // FeedbackSettings is a course's feedback switch.
 type FeedbackSettings struct {
@@ -30,13 +35,14 @@ type FeedbackSettings struct {
 
 // feedbackHash identifies one person's feedback on one target without
 // storing who it was. activityID is nil for course feedback.
-func feedbackHash(courseID uuid.UUID, activityID *uuid.UUID, userID uuid.UUID) string {
+func (s *Service) feedbackHash(courseID uuid.UUID, activityID *uuid.UUID, userID uuid.UUID) string {
 	act := ""
 	if activityID != nil {
 		act = activityID.String()
 	}
-	sum := sha256.Sum256([]byte(courseID.String() + "|" + act + "|" + userID.String() + "|" + feedbackPepper))
-	return hex.EncodeToString(sum[:])
+	mac := hmac.New(sha256.New, s.feedbackPepper)
+	mac.Write([]byte(courseID.String() + "|" + act + "|" + userID.String()))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // GetFeedbackSettings reads a course's feedback settings.
@@ -134,9 +140,9 @@ func (s *Service) MyFeedback(ctx context.Context, courseID, userID uuid.UUID) (M
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
-	hashes := []string{feedbackHash(courseID, nil, userID)}
+	hashes := []string{s.feedbackHash(courseID, nil, userID)}
 	for _, t := range out.Sessions {
-		hashes = append(hashes, feedbackHash(courseID, t.ActivityID, userID))
+		hashes = append(hashes, s.feedbackHash(courseID, t.ActivityID, userID))
 	}
 	rows, err = s.pool.Query(ctx, `SELECT dedupe_hash FROM feedback WHERE dedupe_hash = ANY($1)`, hashes)
 	if err != nil {
@@ -218,7 +224,7 @@ func (s *Service) SubmitFeedback(ctx context.Context, courseID, userID uuid.UUID
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO feedback (course_id, activity_id, user_id, dedupe_hash, rating, comment)
 		VALUES ($1, $2, $3, $4, $5, $6)`,
-		courseID, in.ActivityID, uid, feedbackHash(courseID, in.ActivityID, userID), in.Rating, in.Comment)
+		courseID, in.ActivityID, uid, s.feedbackHash(courseID, in.ActivityID, userID), in.Rating, in.Comment)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return httperror.Conflict("you have already given feedback on this")
