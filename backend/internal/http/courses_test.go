@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/rs/zerolog"
@@ -93,6 +94,14 @@ func setupRouter(t *testing.T) nethttp.Handler {
 // setupRouterWithFiles is setupRouter with an object store (nil = off).
 func setupRouterWithFiles(t *testing.T, store learn.ObjectStore) nethttp.Handler {
 	t.Helper()
+	h, _ := setupRouterWith(t, func(d *httpx.Deps) { d.Files = store })
+	return h
+}
+
+// setupRouterWith is setupRouter with a tweak of the dependencies (nil =
+// none) run after the database is migrated; it also returns the pool.
+func setupRouterWith(t *testing.T, tweak func(*httpx.Deps)) (nethttp.Handler, *pgxpool.Pool) {
+	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL not set; skipping DB-backed tests")
@@ -143,13 +152,16 @@ func setupRouterWithFiles(t *testing.T, store learn.ObjectStore) nethttp.Handler
 		DevDefaultUser: "dev-admin",
 		LinkableGroups: []string{"*"},
 	}
-	return httpx.NewRouter(httpx.Deps{
+	deps := httpx.Deps{
 		Config: cfg,
 		Pool:   pool,
 		Logger: zerolog.Nop(),
 		Access: access,
-		Files:  store,
-	}, "test")
+	}
+	if tweak != nil {
+		tweak(&deps)
+	}
+	return httpx.NewRouter(deps, "test"), pool
 }
 
 // call performs one request as the given identity and decodes the JSON body.
