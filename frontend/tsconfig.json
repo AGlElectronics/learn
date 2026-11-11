@@ -25,5 +25,5 @@
     },
     "types": ["node", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src", "rsbuild.config.ts"]
+  "include": ["src", "rsbuild.config.ts", "vitest.config.ts"]
 }
