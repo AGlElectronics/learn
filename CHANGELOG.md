@@ -178,11 +178,34 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   32 characters, the same value as on HR) or a staff sign-in. The response
   adds `revision` (also the `ETag`; a matching `If-None-Match` returns
   `304`), `group_display`, `privileged` and `dynamic`.
-- Mail uses Den's SMTP settings when Den has configured a server, and
-  Learn's own SMTP settings otherwise.
+- Mail uses Den's SMTP settings when Den sets `smtp.host`, and Learn's
+  `SMTP_*` settings only when Den does not. When Den sets `smtp.password_set`,
+  Learn fetches the password from Den (`SMTPPassword`) and keeps it in
+  memory; a failure to fetch it does not fall back to `SMTP_PASSWORD`.
+  Save the password on Den's Module settings page. You can leave
+  `SMTP_PASSWORD` unset once Den holds it.
+- **BREAKING:** `GET /api/portal/todos` no longer accepts a person's access
+  token or an extra audience (`OIDC_EXTRA_AUDIENCES`, for example
+  `den-spa`). That setting is no longer read; remove it. Den's backend
+  calls the route with Learn's pairing credential and the headers
+  `X-Den-User-Issuer` and `X-Den-User-Subject`. Upgrade to a Den that
+  fetches to-dos that way (Den 1.0.0). On Kubernetes the Learn chart
+  admits `den-backend` from `conservices-den` on the backend port
+  (`networkPolicy.den`); a hand-written NetworkPolicy must allow the same.
+  The chart's `OIDC_AUDIENCE` is `learn-api` and no longer sets
+  `OIDC_EXTRA_AUDIENCES`.
+- The web app's nginx allows Learn itself to frame `/silent-callback.html`
+  (`frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`) so silent
+  sign-in keeps working. Every other page stays unframeable.
+  `EXTRA_FRAME_SRC` is empty. The copy baked into the image for a
+  read-only snippets directory strips every `${NAME}` placeholder,
+  including `S3_ORIGIN`, so nginx still starts.
 
 ### Security
 
+- `/silent-callback.html` may be framed by Learn's own origin only. Every
+  other response still sends `frame-ancestors 'none'` and
+  `X-Frame-Options: DENY`.
 - Rate limits cannot be bypassed with a fake `X-Forwarded-For` header: the
   backend reads the client address from it only when the connection comes
   from a trusted proxy (`TRUSTED_PROXY_CIDRS`), and never reads

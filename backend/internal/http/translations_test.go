@@ -82,6 +82,7 @@ func sheetField(t *testing.T, sheet map[string]any, entityType, field, def strin
 
 func TestTranslations(t *testing.T) {
 	h, pool := setupQualRouter(t, nil, nil)
+	cred := pairPortal(t, pool)
 	ids := signIn(t, h, admin, trainerA, trainerB, learner)
 
 	code, course := call(t, h, trainerA, "POST", "/api/v1/courses", map[string]any{"title": "Fire safety", "summary": "Stay safe"})
@@ -327,13 +328,13 @@ func TestTranslations(t *testing.T) {
 	t.Run("portal to-dos and public verify", func(t *testing.T) {
 		exec(t, pool, `UPDATE enrolments SET due_at = now() + interval '2 days' WHERE course_id = $1 AND user_id = $2`,
 			courseID, ids[learner.user])
-		code, out := call(t, h, learner, "GET", "/api/portal/todos", nil)
+		code, out := rawCall(t, h, "GET", "/api/portal/todos", portalHeaders(cred, learner.user))
 		mustStatus(t, code, 200, "todos")
 		items := arr(out, "items")
 		if len(items) != 1 || str(obj(items[0]), "title") != "Rond NL Fire safety af" {
 			t.Fatalf("Dutch to-dos: %v", out)
 		}
-		code, out = call(t, h, learner, "GET", "/api/portal/todos?lang=en", nil)
+		code, out = rawCall(t, h, "GET", "/api/portal/todos?lang=en", portalHeaders(cred, learner.user))
 		mustStatus(t, code, 200, "todos in English")
 		if str(obj(arr(out, "items")[0]), "title") != "Finish Fire safety" {
 			t.Fatalf("English to-dos: %v", out)

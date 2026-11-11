@@ -66,7 +66,7 @@ Authorization is enforced server-side on every route; see
 
 | Area | Routes |
 | ---- | ------ |
-| Public | `GET /livez`, `/readyz`, `/api/role-catalog`, `/api/qualification-catalog`, `/api/public/verify/{code}`, `/api/brand`; `GET /api/internal/holdings` (service token); `GET /api/portal/todos` (Den portal) |
+| Public | `GET /livez`, `/readyz`, `/api/role-catalog`, `/api/qualification-catalog`, `/api/public/verify/{code}`, `/api/brand`; `GET /api/internal/holdings` (service token); `GET /api/portal/todos` (Den's backend, pairing credential) |
 | Me | `GET /me`, `GET/PUT /me/preferences` (`theme`, `language`), `GET/PUT /me/channels`, `GET /me/qualifications`, `GET /me/paths`, `GET /me/teams` |
 | Courses | `GET /courses/mine`, `/courses/catalog`, `/courses/teach` (`?archived=true`); `POST /courses`; `GET/PATCH /courses/{id}` (incl. `languages`, `default_lang`); `POST /courses/{id}/publish`, `/unpublish`, `/archive`, `/unarchive`, `/copy`, `/enrol`, `/renew`; `GET/POST /courses/{id}/enrolments`; `PATCH/DELETE /enrolments/{id}`; `GET /course-staff` |
 | Content | `POST /courses/{id}/sections`; `PATCH/DELETE /sections/{id}`; `POST /sections/{id}/activities`; `PATCH/DELETE /activities/{id}`; `PUT /activities/{id}/completion`, `/prerequisites` |

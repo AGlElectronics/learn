@@ -73,17 +73,6 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		}
 		logger.Info().Str("issuer", cfg.OIDCIssuerURL).Msg("oidc verifier ready")
 	}
-	// Portal routes (/api/portal/todos) also accept OIDC_EXTRA_AUDIENCES.
-	var portalVerifier *auth.PortalVerifier
-	if cfg.AuthMode == config.AuthModeOIDC && len(cfg.OIDCExtraAudiences) > 0 {
-		portalCtx, cancelPortal := context.WithTimeout(ctx, 30*time.Second)
-		portalVerifier, err = auth.NewPortalVerifier(portalCtx, cfg)
-		cancelPortal()
-		if err != nil {
-			return fmt.Errorf("init portal verifier: %w", err)
-		}
-		logger.Info().Strs("audiences", auth.PortalAudiences(cfg)).Msg("portal verifier ready")
-	}
 
 	// Access config catalog. A bogus ACCESS_CONFIG_PATH fails loudly; no
 	// file at all falls back to the built-in role catalog (dev only).
@@ -155,16 +144,16 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		logger.Info().Msg("S3_ENDPOINT not set; media uploads disabled")
 	}
 
-	// Notifications: email through Den's mail server (smtp.* module
-	// settings) or SMTP_HOST, Telegram when TELEGRAM_BOT_TOKEN is set (and
-	// the telegram_enabled setting is on). Email is decided per message, so
-	// the channel is always there. The reminder worker runs at start and
-	// hourly.
+	// Notifications: email through Den's mail server when Den sets smtp.host
+	// (the password comes from Den when password_set), otherwise SMTP_*.
+	// Telegram when TELEGRAM_BOT_TOKEN is set (and the telegram_enabled
+	// setting is on). Email is decided per message, so the channel is
+	// always there. The reminder worker runs at start and hourly.
 	mailer := mail.NewSwitch(mail.NewSMTP(mail.SMTPConfig{
 		Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
 		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName,
 	}), denSMTP(den))
-	if source, warning := mailer.Source(); warning != "" {
+	if source, warning := mailer.Source(ctx); warning != "" {
 		logger.Warn().Str("mail_source", source).Msg(warning)
 	}
 	notifier := notify.New(logger, notify.NewEmail(mailer), notify.NewTelegram(notify.TelegramConfig{
@@ -175,19 +164,18 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	logger.Info().Strs("channels", notifier.Channels()).Msg("reminders enabled")
 
 	router := httpx.NewRouter(httpx.Deps{
-		Config:         cfg,
-		Pool:           pool,
-		Logger:         logger,
-		Brand:          brandProvider,
-		Den:            den,
-		OIDCVerifier:   oidcVerifier,
-		PortalVerifier: portalVerifier,
-		Access:         access,
-		Keycloak:       keycloak,
-		Files:          store,
-		Notifier:       notifier,
-		Service:        svc,
-		Mail:           mailer,
+		Config:       cfg,
+		Pool:         pool,
+		Logger:       logger,
+		Brand:        brandProvider,
+		Den:          den,
+		OIDCVerifier: oidcVerifier,
+		Access:       access,
+		Keycloak:     keycloak,
+		Files:        store,
+		Notifier:     notifier,
+		Service:      svc,
+		Mail:         mailer,
 	}, Version)
 
 	server := &nethttp.Server{
@@ -203,21 +191,42 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	return runServer(ctx, server, pool, cfg.ShutdownTimeout, logger)
 }
 
-// denSMTP reads the mail server from Den's module settings (smtp.*).
-func denSMTP(den *denlink.Client) mail.DenSMTP {
-	return func() (mail.SMTPConfig, bool, bool) {
-		ms := den.ModuleSettings()
-		if ms == nil {
-			return mail.SMTPConfig{}, false, false
+// shownError is a Den error whose text is the sentence an admin sees.
+type shownError struct{ err error }
+
+func (e *shownError) Error() string { return denlink.UserMessage(e.err) }
+
+func (e *shownError) Unwrap() error { return e.err }
+
+// denSMTP reads the mail server from Den's module settings. When Den sets
+// smtp.host, that server is used and SMTP_* is not. password_set fetches
+// the password with SMTPPassword; a failure is returned (no fallback).
+// ErrNotPaired means Den is not providing mail, so the caller uses SMTP_*.
+func denSMTP(den *denlink.Client) mail.DenMail {
+	return func(ctx context.Context) (mail.SMTPConfig, bool, error) {
+		if den == nil {
+			return mail.SMTPConfig{}, false, nil
 		}
-		s, ok := ms.SMTP()
+		s, ok := den.ModuleSettings().SMTP()
 		if !ok {
-			return mail.SMTPConfig{}, false, false
+			return mail.SMTPConfig{}, false, nil
 		}
-		return mail.SMTPConfig{
+		cfg := mail.SMTPConfig{
 			Host: s.Host, Port: s.Port, Username: s.Username,
 			From: s.From, FromName: s.FromName, Security: s.Security,
-		}, s.PasswordSet, true
+		}
+		if !s.PasswordSet {
+			return cfg, true, nil
+		}
+		password, err := den.SMTPPassword(ctx)
+		if errors.Is(err, denlink.ErrNotPaired) {
+			return mail.SMTPConfig{}, false, nil
+		}
+		if err != nil {
+			return mail.SMTPConfig{}, false, &shownError{err: err}
+		}
+		cfg.Password = password
+		return cfg, true, nil
 	}
 }
 

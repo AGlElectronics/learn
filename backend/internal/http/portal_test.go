@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -21,16 +22,19 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 
 	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/config"
+	"github.com/AGlElectronics/learn/backend/internal/denlink"
 	httpx "github.com/AGlElectronics/learn/backend/internal/http"
 	"github.com/AGlElectronics/learn/backend/internal/notify"
 )
 
 func TestPortalTodos(t *testing.T) {
 	h, pool := setupQualRouter(t, nil, nil)
+	cred := pairPortal(t, pool)
 	pia := identity{user: "pia-portal"}
 	ids := signIn(t, h, admin, trainerA, pia)
 	piaID := ids[pia.user]
@@ -97,7 +101,7 @@ func TestPortalTodos(t *testing.T) {
 			VALUES ($1, $2, $3, $4, $5)`, piaID, str(qual, "id"), q.course, code2, expires)
 	}
 
-	code, out := call(t, h, pia, "GET", "/api/portal/todos", nil)
+	code, out := rawCall(t, h, "GET", "/api/portal/todos", portalHeaders(cred, pia.user))
 	mustStatus(t, code, 200, "portal todos")
 	items := arr(out, "items")
 	type want struct{ prefix, severity, title string }
@@ -134,7 +138,7 @@ func TestPortalTodos(t *testing.T) {
 	}
 
 	t.Run("scoped to the caller", func(t *testing.T) {
-		code, out := call(t, h, trainerA, "GET", "/api/portal/todos", nil)
+		code, out := rawCall(t, h, "GET", "/api/portal/todos", portalHeaders(cred, trainerA.user))
 		mustStatus(t, code, 200, "trainer todos")
 		if len(arr(out, "items")) != 0 {
 			t.Fatalf("trainer sees someone else's to-dos: %v", out)
@@ -142,9 +146,41 @@ func TestPortalTodos(t *testing.T) {
 	})
 }
 
-// --- OIDC: Den's audience on the portal route only --------------------------
+// --- Portal auth: Den's backend, not a person's token ------------------------
 
 const portalIssuer = "https://auth.example.test/realms/test"
+
+// pairPortal stores a development pairing on pool and returns the credential
+// Den would send. The router's den client reads the same row.
+func pairPortal(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	const cred = "portal-cred"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/integrations/pair":
+			_, _ = w.Write([]byte(`{"credential":"` + cred + `","module_id":"mod-learn"}`))
+		case "/api/v1/integrations/bundle":
+			_, _ = w.Write([]byte(`{"brand":{"revision":1,"organization_name":"Con Org"}}`))
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := denlink.New(pool, denlink.Config{AppEnv: "development", Slug: "learn", Version: "test"}, zerolog.Nop())
+	if _, err := c.Pair(context.Background(), srv.URL+"/api/v1/integrations/pair?token=pair-me"); err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	return cred
+}
+
+func portalHeaders(cred, subject string) map[string]string {
+	return map[string]string{
+		"Authorization":           "Bearer " + cred,
+		denlink.HeaderUserIssuer:  "dev",
+		denlink.HeaderUserSubject: subject,
+	}
+}
 
 func signJWT(t *testing.T, key *rsa.PrivateKey, claims map[string]any) string {
 	t.Helper()
@@ -161,8 +197,9 @@ func signJWT(t *testing.T, key *rsa.PrivateKey, claims map[string]any) string {
 	return signing + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
-func TestPortalTodosAcceptsDenAudienceOnly(t *testing.T) {
+func TestPortalTodosFromDen(t *testing.T) {
 	_, pool := setupQualRouter(t, nil, nil)
+	cred := pairPortal(t, pool)
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("key: %v", err)
@@ -178,17 +215,18 @@ func TestPortalTodosAcceptsDenAudienceOnly(t *testing.T) {
 	}
 	cfg := &config.Config{
 		AppEnv: "development", DatabaseURL: os.Getenv("TEST_DATABASE_URL"), AuthMode: config.AuthModeOIDC,
-		OIDCIssuerURL: portalIssuer, OIDCClientID: "learn-spa", OIDCExtraAudiences: []string{"den-spa"},
-		CORSAllowedOrigins: []string{"https://learn.test", "https://den.test"}, PublicBaseURL: "https://learn.test",
+		OIDCIssuerURL: portalIssuer, OIDCClientID: "learn-spa",
+		CORSAllowedOrigins: []string{"https://learn.test"}, PublicBaseURL: "https://learn.test",
 	}
 	h := httpx.NewRouter(httpx.Deps{
 		Config: cfg, Pool: pool, Logger: zerolog.Nop(), Access: access,
-		OIDCVerifier:   auth.NewOIDCVerifierWithKeySet(portalIssuer, cfg.Audience(), keys, cfg.GroupMatch),
-		PortalVerifier: auth.NewPortalVerifierWithKeySet(portalIssuer, keys, auth.PortalAudiences(cfg), cfg.GroupMatch),
+		OIDCVerifier: auth.NewOIDCVerifierWithKeySet(portalIssuer, cfg.Audience(), keys, cfg.GroupMatch),
 	}, "test")
 
 	// typed signs a token of the given type (Keycloak's typ claim: Bearer
-	// for access tokens, ID for ID tokens).
+	// for access tokens, ID for ID tokens). Every route, including portal
+	// to-dos, refuses anything but a learn-api access token — and the
+	// portal route refuses that too. Den sends the pairing credential.
 	typed := func(typ, aud string, groups []string) map[string]string {
 		c := map[string]any{
 			"iss": portalIssuer, "sub": "kc-user-1", "aud": aud, "name": "Olive Oidc", "typ": typ,
@@ -199,73 +237,54 @@ func TestPortalTodosAcceptsDenAudienceOnly(t *testing.T) {
 		}
 		return map[string]string{"Authorization": "Bearer " + signJWT(t, key, c)}
 	}
-	token := func(aud string, groups []string) map[string]string {
-		if aud == "den-spa" {
-			return typed("ID", aud, groups)
-		}
-		return typed("Bearer", aud, groups)
-	}
+	accessToken := typed("Bearer", "learn-api", []string{"team-red"})
 
-	t.Run("access token for learn-api only", func(t *testing.T) {
-		code, _ := rawCall(t, h, "GET", "/api/v1/me", typed("ID", "learn-api", []string{"team-red"}))
-		mustStatus(t, code, 401, "ID token for learn-api on /api/v1/me")
-		code, _ = rawCall(t, h, "GET", "/api/portal/todos", typed("ID", "learn-api", nil))
-		mustStatus(t, code, 401, "ID token for learn-api on /api/portal/todos")
-		code, _ = rawCall(t, h, "GET", "/api/v1/me", typed("Bearer", "learn-spa", []string{"team-red"}))
-		mustStatus(t, code, 401, "access token for the client id instead of learn-api")
+	code, _ := rawCall(t, h, "GET", "/api/v1/me", typed("ID", "learn-api", []string{"team-red"}))
+	mustStatus(t, code, 401, "ID token for learn-api on /api/v1/me")
+	code, _ = rawCall(t, h, "GET", "/api/v1/me", typed("Bearer", "learn-spa", []string{"team-red"}))
+	mustStatus(t, code, 401, "access token for the client id instead of learn-api")
+	code, _ = rawCall(t, h, "GET", "/api/v1/me", typed("Bearer", "den-spa", nil))
+	mustStatus(t, code, 401, "den-spa token on /api/v1/me")
+
+	code, _ = rawCall(t, h, "GET", "/api/v1/me", accessToken)
+	mustStatus(t, code, 200, "learn-api access token on /api/v1/me")
+
+	code, _ = rawCall(t, h, "GET", "/api/portal/todos", accessToken)
+	mustStatus(t, code, 401, "a person's access token is not a pairing credential")
+	code, _ = rawCall(t, h, "GET", "/api/portal/todos", map[string]string{"Authorization": "Bearer wrong"})
+	mustStatus(t, code, 401, "wrong credential")
+	code, _ = rawCall(t, h, "GET", "/api/portal/todos", nil)
+	mustStatus(t, code, 401, "no credential")
+	code, out := rawCall(t, h, "GET", "/api/portal/todos", map[string]string{
+		"Authorization": "Bearer " + cred,
 	})
-	userGroups := func() []string {
-		t.Helper()
-		var gs []string
-		if err := pool.QueryRow(context.Background(), `
-			SELECT COALESCE(array_agg(ug.group_name ORDER BY ug.group_name), '{}')
-			  FROM user_groups ug JOIN users u ON u.id = ug.user_id
-			 WHERE u.issuer = $1 AND u.subject = 'kc-user-1'`, portalIssuer).Scan(&gs); err != nil {
-			t.Fatalf("user groups: %v", err)
-		}
-		return gs
+	mustStatus(t, code, 400, "missing identity headers")
+	if str(obj(out["error"]), "message") != "issuer and subject are required" {
+		t.Fatalf("missing headers: %v", out)
 	}
 
-	code, me := rawCall(t, h, "GET", "/api/v1/me", token("learn-api", []string{"team-red"}))
-	mustStatus(t, code, 200, "learn token on /api/v1/me")
-	if g := userGroups(); len(g) != 1 || g[0] != "team-red" {
-		t.Fatalf("groups after learn login: %v", g)
-	}
-
-	den := token("den-spa", nil)
-	code, _ = rawCall(t, h, "GET", "/api/v1/me", den)
-	mustStatus(t, code, 401, "den token on /api/v1/me")
-	code, _ = rawCall(t, h, "GET", "/api/v1/courses/mine", den)
-	mustStatus(t, code, 401, "den token on /api/v1/courses/mine")
-	code, out := rawCall(t, h, "GET", "/api/portal/todos", den)
-	mustStatus(t, code, 200, "den token on /api/portal/todos")
-	if _, ok := out["items"].([]any); !ok {
-		t.Fatalf("todos shape: %v", out)
-	}
-	if g := userGroups(); len(g) != 1 || g[0] != "team-red" {
-		t.Fatalf("a token without a groups claim must not wipe the group cache: %v", g)
+	code, out = rawCall(t, h, "GET", "/api/portal/todos", map[string]string{
+		"Authorization":           "Bearer " + cred,
+		denlink.HeaderUserIssuer:  portalIssuer,
+		denlink.HeaderUserSubject: "kc-user-1",
+	})
+	mustStatus(t, code, 200, "den call for the signed-in person")
+	if len(arr(out, "items")) != 0 {
+		t.Fatalf("person with no open work: %v", out)
 	}
 	var users int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM users WHERE subject = 'kc-user-1'`).Scan(&users); err != nil || users != 1 {
-		t.Fatalf("den token should resolve to the same user (%d rows, %v); me = %v", users, err, me)
+		t.Fatalf("portal call must not create a second user (%d, %v)", users, err)
 	}
 
-	code, _ = rawCall(t, h, "GET", "/api/portal/todos", token("learn-api", nil))
-	mustStatus(t, code, 200, "learn token on /api/portal/todos")
-	code, _ = rawCall(t, h, "GET", "/api/portal/todos", token("hr-spa", nil))
-	mustStatus(t, code, 401, "foreign audience on /api/portal/todos")
-	code, _ = rawCall(t, h, "GET", "/api/portal/todos", nil)
-	mustStatus(t, code, 401, "no token on /api/portal/todos")
-
-	req := httptest.NewRequest("OPTIONS", "/api/portal/todos", nil)
-	req.Header.Set("Origin", "https://den.test")
-	req.Header.Set("Access-Control-Request-Method", "GET")
-	req.Header.Set("Access-Control-Request-Headers", "authorization")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Header().Get("Access-Control-Allow-Origin") != "https://den.test" ||
-		!strings.Contains(strings.ToLower(rec.Header().Get("Access-Control-Allow-Headers")), "authorization") {
-		t.Fatalf("CORS preflight from Den: %d %v", rec.Code, rec.Header())
+	code, out = rawCall(t, h, "GET", "/api/portal/todos", map[string]string{
+		"Authorization":           "Bearer " + cred,
+		denlink.HeaderUserIssuer:  portalIssuer,
+		denlink.HeaderUserSubject: "never-signed-in",
+	})
+	mustStatus(t, code, 200, "unknown person")
+	if len(arr(out, "items")) != 0 {
+		t.Fatalf("unknown person has to-dos: %v", out)
 	}
 }
 

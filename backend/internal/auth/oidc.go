@@ -42,6 +42,12 @@ type OIDCClaims struct {
 // errIDToken is returned for a token whose typ says it is an ID token.
 var errIDToken = errors.New("an ID token was sent; the API needs an access token")
 
+// NewOIDCVerifierWithKeySet builds a verifier without discovery (tests, or a
+// fixed JWKS). audience is Learn's API audience (OIDC_AUDIENCE).
+func NewOIDCVerifierWithKeySet(issuer, audience string, keySet oidc.KeySet, gm groupmatch.Config) *OIDCVerifier {
+	return &OIDCVerifier{verifier: oidc.NewVerifier(issuer, keySet, &oidc.Config{ClientID: audience}), issuer: issuer, groups: gm}
+}
+
 // NewOIDCVerifier runs OIDC discovery and returns a verifier for Learn's API
 // audience. Call once at startup; the result is safe for concurrent use.
 func NewOIDCVerifier(ctx context.Context, cfg *config.Config) (*OIDCVerifier, error) {

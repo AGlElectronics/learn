@@ -104,7 +104,7 @@ func (h *settingsHandler) current(r *http.Request) (settingsResponse, error) {
 	}
 	out.Retention.Editable = len(out.Retention.ManagedInDen) < 2
 	out.Retention.PendingLegalReview = source == learn.RetentionFromDefault
-	out.Mail.Source, out.Mail.Warning = h.mail.Source()
+	out.Mail.Source, out.Mail.Warning = h.mail.Source(r.Context())
 	out.GroupDirectory.Mode = newGroupPolicy(h.cfg).directory
 	out.GroupDirectory.Available = h.directory
 	out.GroupDirectory.Linkable = h.cfg.LinkableGroups

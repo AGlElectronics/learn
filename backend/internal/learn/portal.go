@@ -2,11 +2,13 @@ package learn
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Portal to-do severities (suite-wide contract, see Den's portal widget).
@@ -50,6 +52,20 @@ func SortPortalTodos(items []PortalTodo) {
 		}
 		return todoSeverityRank[a.Severity] < todoSeverityRank[b.Severity]
 	})
+}
+
+// UserIDByIdentity is the local user for an OIDC (issuer, subject) pair.
+// found is false when that person has never signed in; nothing is created.
+func (s *Service) UserIDByIdentity(ctx context.Context, issuer, subject string) (uuid.UUID, bool, error) {
+	var id uuid.UUID
+	err := s.pool.QueryRow(ctx, `SELECT id FROM users WHERE issuer = $1 AND subject = $2`, issuer, subject).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return id, true, nil
 }
 
 // PortalTodos collects the caller's to-dos: courses due within 14 days or

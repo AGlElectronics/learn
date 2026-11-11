@@ -261,7 +261,8 @@ keeps replicas from double-sending. `user_channels` holds extra notifier
 addresses. Without SMTP or Telegram configured the worker does nothing.
 
 Reminders go through `internal/notify`: every enabled channel (email when
-`SMTP_HOST` is set, Telegram when `TELEGRAM_BOT_TOKEN` is) gets each notice
+Den sets `smtp.host`, or `SMTP_HOST` is set and Den does not, Telegram when
+`TELEGRAM_BOT_TOKEN` is) gets each notice
 with the recipient's `user_channels` addresses; a reminder counts as sent
 when at least one channel really delivered it. People save their Telegram
 chat id with `GET|PUT /me/channels {telegram_chat_id}` (the Notifications
@@ -315,9 +316,8 @@ team_board_groups (course_id | qualification_id, group_name)
 ## Portal to-dos (Den)
 
 `GET /api/portal/todos` implements the suite-wide contract Den's portal
-widget reads: `{"items": [{id, title, detail, due_at, url, severity}]}` for
-the caller only, sorted by `due_at` (none last), URLs absolute on
-`PUBLIC_BASE_URL`.
+reads: `{"items": [{id, title, detail, due_at, url, severity}]}` for one
+person, sorted by `due_at` (none last), URLs absolute on `PUBLIC_BASE_URL`.
 
 - Courses due within 14 days or overdue with work left (active learner
   enrolment): `info`, `warning` within 3 days, `danger` when overdue.
@@ -328,13 +328,15 @@ the caller only, sorted by `due_at` (none last), URLs absolute on
 - Quizzes whose attempts this cycle all failed and that have attempts
   left: `info`, no due date.
 
-Auth: every `/api/v1` route checks an access token whose audience is
-`learn-api` (`OIDC_AUDIENCE`) and refuses an ID token. This one route uses
-a separate verifier that also accepts the audiences in
-`OIDC_EXTRA_AUDIENCES` (Den's portal, still `den-spa` while Den sends its
-ID token). Users resolve by issuer + subject as usual; a token without a
-groups claim leaves the cached `user_groups` alone. Den's origins must be
-in `CORS_ALLOWED_ORIGINS` (`Authorization` is an allowed header).
+Auth: every route that takes a person's token, including every `/api/v1`
+route, checks an access token whose audience is `learn-api`
+(`OIDC_AUDIENCE`) and refuses an ID token. `GET /api/portal/todos` does
+not take that token. Den's backend calls it with Learn's pairing
+credential (`Authorization: Bearer`) and the person in `X-Den-User-Issuer`
+and `X-Den-User-Subject`. A missing or wrong credential is `401`; missing
+headers are `400`. Learn looks the person up by issuer and subject and
+does not create a user. Someone who has never signed in gets
+`{"items":[]}`.
 
 ## Question statistics
 

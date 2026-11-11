@@ -41,7 +41,7 @@
 //	POST /api/v1/reminders/run — send due reminders now (settings.manage)
 //	team progress boards, GET /api/v1/me/teams — see mountTeamBoardRoutes
 //	GET|PUT /api/v1/me/channels — notification channels (Telegram chat id)
-//	GET /api/portal/todos  — suite to-do contract; also accepts OIDC_EXTRA_AUDIENCES tokens
+//	GET /api/portal/todos  — suite to-do contract; Den's backend, pairing credential
 //	GET /api/qualification-catalog — public qualification catalog for HR
 //	GET /api/internal/holdings?subjects= — valid qualifications (LEARN_SERVICE_TOKEN)
 //	GET /api/public/verify/{code} — public certificate check (no auth, rate-limited)
@@ -86,10 +86,7 @@ type Deps struct {
 	Logger       zerolog.Logger
 	Brand        brand.Provider
 	OIDCVerifier *auth.OIDCVerifier
-	// PortalVerifier also accepts OIDC_EXTRA_AUDIENCES, on /api/portal/*
-	// only; nil = those routes use OIDCVerifier.
-	PortalVerifier *auth.PortalVerifier
-	Access         *auth.AccessConfig
+	Access       *auth.AccessConfig
 	// Den is the pairing with Den; nil means a fresh standalone client.
 	Den *denlink.Client
 	// Keycloak is the read-only admin client for group sync; nil = off.
@@ -179,8 +176,9 @@ func NewRouter(deps Deps, version string) http.Handler {
 		api.Get("/qualification-catalog", qualificationCatalogHandler(courses.svc))
 		api.Get("/internal/holdings", holdingsHandler(deps.Config, courses.svc))
 		api.With(verifyLimiter().Middleware).Get("/public/verify/{code}", verifyHandler(courses.svc))
-		api.With(auth.PortalMiddleware(deps.Config, resolver, deps.PortalVerifier, deps.OIDCVerifier)).
-			Get("/portal/todos", portalTodosHandler(courses.svc, portalBaseURL(deps.Config)))
+		// Den's backend calls this with the pairing credential and the person's
+		// issuer and subject. A person's access token is not accepted.
+		api.Get("/portal/todos", den.RequireDen(portalTodosHandler(courses.svc, portalBaseURL(deps.Config))))
 
 		api.Route("/v1", func(v1 chi.Router) {
 			// Brand is public so the login screen can render before the

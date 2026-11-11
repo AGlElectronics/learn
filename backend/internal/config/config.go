@@ -50,16 +50,13 @@ type Config struct {
 	DatabaseURL string
 
 	// Auth
-	AuthMode      AuthMode
-	OIDCIssuerURL string
-	OIDCClientID  string
-	OIDCAudience  string
-	// OIDCExtraAudiences are other clients' audiences (Den's SPA) accepted
-	// only on the read-only portal routes (GET /api/portal/todos).
-	OIDCExtraAudiences []string
-	AccessConfigPath   string
-	DevDefaultUser     string
-	DevDefaultGroups   []string
+	AuthMode         AuthMode
+	OIDCIssuerURL    string
+	OIDCClientID     string
+	OIDCAudience     string
+	AccessConfigPath string
+	DevDefaultUser   string
+	DevDefaultGroups []string
 	// GroupMatch is OIDC_GROUPS_CLAIM, OIDC_GROUP_MATCH, OIDC_GROUP_PREFIX.
 	GroupMatch groupmatch.Config
 	// HRServiceToken lets HR read GET /api/role-catalog without a sign-in
@@ -213,16 +210,15 @@ func Load() (*Config, error) {
 
 		DatabaseURL: getEnv("DATABASE_URL", ""),
 
-		AuthMode:           auth.AuthMode,
-		OIDCIssuerURL:      getEnv("OIDC_ISSUER_URL", ""),
-		OIDCClientID:       getEnv("OIDC_CLIENT_ID", ""),
-		OIDCAudience:       getEnv("OIDC_AUDIENCE", DefaultAudience),
-		OIDCExtraAudiences: splitCSV(getEnv("OIDC_EXTRA_AUDIENCES", "")),
-		AccessConfigPath:   getEnv("ACCESS_CONFIG_PATH", ""),
-		DevDefaultUser:     getEnv("DEV_DEFAULT_USER", "dev-admin"),
-		DevDefaultGroups:   splitCSV(getEnv("DEV_DEFAULT_GROUPS", "learn-admin")),
-		GroupMatch:         groups,
-		HRServiceToken:     getEnv("HR_SERVICE_TOKEN", ""),
+		AuthMode:         auth.AuthMode,
+		OIDCIssuerURL:    getEnv("OIDC_ISSUER_URL", ""),
+		OIDCClientID:     getEnv("OIDC_CLIENT_ID", ""),
+		OIDCAudience:     getEnv("OIDC_AUDIENCE", DefaultAudience),
+		AccessConfigPath: getEnv("ACCESS_CONFIG_PATH", ""),
+		DevDefaultUser:   getEnv("DEV_DEFAULT_USER", "dev-admin"),
+		DevDefaultGroups: splitCSV(getEnv("DEV_DEFAULT_GROUPS", "learn-admin")),
+		GroupMatch:       groups,
+		HRServiceToken:   getEnv("HR_SERVICE_TOKEN", ""),
 
 		BrandLocalPath: getEnv("BRAND_LOCAL_PATH", ""),
 		Den:            den,

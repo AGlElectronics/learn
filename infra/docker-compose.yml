@@ -127,7 +127,6 @@ services:
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
       # Access-token audience (Keycloak audience mapper on learn-spa).
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-learn-api}
-      OIDC_EXTRA_AUDIENCES: ${OIDC_EXTRA_AUDIENCES:-}
       # Groups come only from this claim. full: the whole path must match.
       OIDC_GROUPS_CLAIM: ${OIDC_GROUPS_CLAIM:-groups}
       OIDC_GROUP_MATCH: ${OIDC_GROUP_MATCH:-full}
@@ -199,10 +198,11 @@ services:
     environment:
       # Origins the Content Security Policy allows besides the app itself
       # (infra/security-headers.conf.template). S3_ORIGIN is the browser-facing
-      # address of presigned uploads.
+      # address of presigned uploads. EXTRA_FRAME_SRC stays empty.
       KEYCLOAK_ORIGIN: ${KEYCLOAK_ORIGIN:-http://localhost:8085}
       DEN_ORIGIN: ${DEN_ORIGIN:-https://den.conservices.test}
       S3_ORIGIN: ${S3_ORIGIN:-http://localhost:9030}
+      EXTRA_FRAME_SRC: ""
     restart: unless-stopped
     depends_on:
       - backend
