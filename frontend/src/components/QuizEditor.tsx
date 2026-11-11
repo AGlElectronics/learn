@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { AlertTriangle, ChevronDown, ChevronRight, ClipboardCheck, Plus, RotateCcw, Save, Shuffle, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, ClipboardCheck, Plus, Save, Shuffle, Trash2, X } from 'lucide-react';
+import { ResetQuizButton } from '@/components/ResetQuizButton';
 import { Button } from '@/components/ui/Button';
 import { Input, Label } from '@/components/ui/Input';
 import { LoadingRow } from '@/components/ui/States';
@@ -8,7 +9,6 @@ import { updateActivity, type Activity } from '@/api/courses';
 import {
   createSlot,
   deleteSlot,
-  resetAttempts,
   updateSlot,
   useBankMutation,
   useCategories,
@@ -65,7 +65,7 @@ export function QuizEditor({
       {open ? (
         <div className="border-t border-border p-3 space-y-4">
           <QuizSettingsForm activity={activity} onChanged={onChanged} />
-          <QuizSlots courseId={courseId} activityId={activity.id} onChanged={onChanged} />
+          <QuizSlots courseId={courseId} activityId={activity.id} title={activity.title} onChanged={onChanged} />
         </div>
       ) : null}
     </div>
@@ -154,10 +154,12 @@ function QuizSettingsForm({ activity, onChanged }: { activity: Activity; onChang
 function QuizSlots({
   courseId,
   activityId,
+  title,
   onChanged,
 }: {
   courseId: string;
   activityId: string;
+  title: string;
   onChanged: () => void;
 }) {
   const slotsQ = useSlots(activityId);
@@ -177,14 +179,7 @@ function QuizSlots({
   );
   const changeDraw = useBankMutation(({ id, n }: { id: string; n: number }) => updateSlot(id, { draw_count: n }));
   const remove = useBankMutation((id: string) => deleteSlot(id));
-  const reset = useMutation({
-    mutationFn: () => resetAttempts(activityId),
-    onSuccess: (r) => {
-      alert(`Deleted ${r.deleted} attempt${r.deleted === 1 ? '' : 's'}.`);
-      onChanged();
-    },
-  });
-  const error = (add.error ?? changeDraw.error ?? remove.error ?? reset.error) as Error | null;
+  const error = (add.error ?? changeDraw.error ?? remove.error) as Error | null;
 
   if (slotsQ.isLoading) return <LoadingRow />;
   const slots = slotsQ.data?.slots ?? [];
@@ -302,18 +297,7 @@ function QuizSlots({
       )}
 
       <div className="flex justify-end">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-destructive"
-          disabled={reset.isPending}
-          onClick={() => {
-            if (confirm('Delete every attempt on this quiz? Learners lose their scores and completion.')) reset.mutate();
-          }}
-        >
-          <RotateCcw className="w-4 h-4" />
-          Reset attempts
-        </Button>
+        <ResetQuizButton activityId={activityId} title={title} onDone={onChanged} />
       </div>
       {error ? <p className="text-sm text-destructive">{error.message}</p> : null}
     </div>

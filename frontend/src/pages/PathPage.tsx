@@ -2,9 +2,8 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { ArrowDown, ArrowLeft, ArrowUp, RefreshCw, Trash2, UserPlus, UsersRound } from 'lucide-react';
-import { ApiError } from '@/api/client';
-import { listTeachCourses, searchPeople } from '@/api/courses';
-import { listKeycloakGroups, type GroupSyncResult } from '@/api/groups';
+import { listTeachCourses, searchPeople, type Person } from '@/api/courses';
+import { GroupDirectoryWarning, GroupPathInput, syncSummary } from '@/components/GroupLinksPanel';
 import {
   addPathGroupLink,
   deletePath,
@@ -25,16 +24,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input, Label } from '@/components/ui/Input';
 import { PageContainer, PageHeader } from '@/components/ui/PageHeader';
 import { ErrorRow, LoadingRow } from '@/components/ui/States';
+import { useT } from '@/i18n';
 
 const selectClasses = 'w-full h-9 rounded-md border border-input bg-background px-2 text-sm';
-
-function syncSummary(r: GroupSyncResult) {
-  const parts = [`${r.members} member(s)`];
-  if (r.enrolled) parts.push(`${r.enrolled} enrolled`);
-  if (r.reactivated) parts.push(`${r.reactivated} reactivated`);
-  if (r.deactivated) parts.push(`${r.deactivated} deactivated`);
-  return parts.join(' · ');
-}
 
 function SettingsCard({ path, onSaved }: { path: LearningPath; onSaved: () => void }) {
   const [name, setName] = useState(path.name);
@@ -259,6 +251,8 @@ function PeopleCard({ path, onChanged }: { path: LearningPath; onChanged: () => 
   const remove = useMutation({ mutationFn: removePathEnrolment, onSuccess: refresh });
   const enrolments = enrolmentsQ.data?.enrolments ?? [];
   const activeIds = new Set(enrolments.filter((e) => e.status === 'active').map((e) => e.user_id));
+  // Path enrolment takes Learn ids only; directory hits (never signed in) are left out.
+  const known = (peopleQ.data?.people ?? []).filter((p): p is Person & { id: string } => p.id !== null);
   const error = (add.error ?? remove.error) as Error | null;
 
   return (
@@ -278,10 +272,10 @@ function PeopleCard({ path, onChanged }: { path: LearningPath; onChanged: () => 
           />
           {peopleQ.data && q.trim() ? (
             <ul className="mt-2 space-y-1">
-              {peopleQ.data.people.length === 0 ? (
+              {known.length === 0 ? (
                 <li className="text-sm text-muted-foreground">Nobody found.</li>
               ) : (
-                peopleQ.data.people.map((p) => (
+                known.map((p) => (
                   <li key={p.id} className="flex items-center justify-between gap-2 text-sm">
                     <span className="min-w-0 truncate">
                       {p.display_name}
@@ -347,15 +341,10 @@ function PeopleCard({ path, onChanged }: { path: LearningPath; onChanged: () => 
 
 function GroupsCard({ path, onChanged }: { path: LearningPath; onChanged: () => void }) {
   const qc = useQueryClient();
+  const t = useT();
   const linksQ = useQuery({
     queryKey: ['path-group-links', path.id],
     queryFn: ({ signal }) => listPathGroupLinks(path.id, signal),
-  });
-  const groupsQ = useQuery({
-    queryKey: ['keycloak-groups'],
-    queryFn: ({ signal }) => listKeycloakGroups(signal),
-    retry: false,
-    staleTime: 60_000,
   });
   const [group, setGroup] = useState('');
   const [message, setMessage] = useState<string | null>(null);
@@ -392,10 +381,8 @@ function GroupsCard({ path, onChanged }: { path: LearningPath; onChanged: () => 
       refresh();
     },
   });
-  const keycloakDown = groupsQ.error instanceof ApiError && groupsQ.error.status === 503;
   const links = linksQ.data?.links ?? [];
   const linked = new Set(links.map((l) => l.group_name));
-  const choices = (groupsQ.data?.groups ?? []).filter((g) => !linked.has(g.name));
   const error = (add.error ?? remove.error ?? sync.error) as Error | null;
 
   return (
@@ -411,6 +398,7 @@ function GroupsCard({ path, onChanged }: { path: LearningPath; onChanged: () => 
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        <GroupDirectoryWarning mode={linksQ.data?.directory} available={linksQ.data?.sync_available} />
         {linksQ.isLoading ? <LoadingRow message="Loading groups…" /> : null}
         {linksQ.isError ? <ErrorRow message={(linksQ.error as Error).message} /> : null}
         {links.length > 0 ? (
@@ -418,11 +406,12 @@ function GroupsCard({ path, onChanged }: { path: LearningPath; onChanged: () => 
             {links.map((l) => (
               <li key={l.group_name} className="flex items-start justify-between gap-2 text-sm">
                 <div className="min-w-0">
-                  <p className="font-medium truncate">{l.group_name}</p>
+                  <p className="font-medium truncate">{l.group_path}</p>
                   <p className="text-xs text-muted-foreground">
                     {l.members} member(s) · {l.active} on path
                     {l.last_synced_at ? ` · synced ${new Date(l.last_synced_at).toLocaleString()}` : ''}
                   </p>
+                  {!l.path_resolved ? <p className="text-xs text-warning">{t('groups.unresolved')}</p> : null}
                   {l.last_sync_error ? <p className="text-xs text-destructive">{l.last_sync_error}</p> : null}
                 </div>
                 <Button
@@ -431,7 +420,7 @@ function GroupsCard({ path, onChanged }: { path: LearningPath; onChanged: () => 
                   title="Unlink group"
                   disabled={remove.isPending}
                   onClick={() => {
-                    if (confirm(`Unlink "${l.group_name}"? Its members leave the path unless something else covers them; progress is kept.`))
+                    if (confirm(`Unlink "${l.group_path}"? Its members leave the path unless something else covers them; progress is kept.`))
                       remove.mutate(l.group_name);
                   }}
                 >
@@ -450,24 +439,7 @@ function GroupsCard({ path, onChanged }: { path: LearningPath; onChanged: () => 
             if (group.trim()) add.mutate(group.trim());
           }}
         >
-          <Label htmlFor="path-group-name">Link a group</Label>
-          {groupsQ.isSuccess ? (
-            <select id="path-group-name" className={selectClasses} value={group} onChange={(e) => setGroup(e.target.value)}>
-              <option value="">Choose a group…</option>
-              {choices.map((g) => (
-                <option key={g.id} value={g.name}>
-                  {g.path || g.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <Input id="path-group-name" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Group name" />
-          )}
-          {keycloakDown ? (
-            <p className="text-xs text-muted-foreground">
-              Keycloak sync is not configured; members join when they sign in.
-            </p>
-          ) : null}
+          <GroupPathInput id="path-group-name" value={group} onChange={setGroup} exclude={linked} />
           <div className="flex gap-2">
             <Button type="submit" size="sm" disabled={!group.trim() || add.isPending}>
               Link group

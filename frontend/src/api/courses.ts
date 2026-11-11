@@ -20,6 +20,8 @@ export type Course = {
   created_by?: string;
   created_at: string;
   updated_at: string;
+  /** Set while archived: hidden from learners and lists, read-only. */
+  archived_at: string | null;
 };
 
 export type CourseSummary = Course & {
@@ -92,7 +94,8 @@ export type Enrolment = {
   user_id: string;
   role: 'learner' | 'trainer';
   display_name: string;
-  email: string;
+  /** Left out for trainers; course and training managers see it. */
+  email?: string;
   created_at: string;
   progress: Progress;
   /** group = created by the Keycloak group sync. */
@@ -104,10 +107,34 @@ export type Enrolment = {
   overdue: boolean;
 };
 
+/**
+ * Someone the people picker found. id is null for a person found only in
+ * the identity provider's directory (never signed in): enrol them by
+ * directory_id. email is left out for trainers.
+ */
 export type Person = {
-  id: string;
+  id: string | null;
   display_name: string;
-  email: string;
+  email?: string;
+  directory_id?: string;
+};
+
+/** Where the picker searched: Learn's people, or also the directory. */
+export type PeopleSource = 'learn' | 'learn+directory';
+
+/** Who a picker row is, for enrolment. */
+export type PersonRef = { user_id: string } | { directory_id: string };
+
+export function personRef(p: Person): PersonRef {
+  return p.id ? { user_id: p.id } : { directory_id: p.directory_id ?? '' };
+}
+
+export type StaffedCourse = {
+  id: string;
+  title: string;
+  published: boolean;
+  archived: boolean;
+  trainers: { enrolment_id: string; user_id: string; display_name: string; email?: string }[];
 };
 
 export function listMyCourses(signal?: AbortSignal) {
@@ -118,8 +145,21 @@ export function listCatalog(signal?: AbortSignal) {
   return apiRequest<{ courses: CourseSummary[] }>('/api/v1/courses/catalog', { signal });
 }
 
-export function listTeachCourses(signal?: AbortSignal) {
-  return apiRequest<{ courses: CourseSummary[] }>('/api/v1/courses/teach', { signal });
+export function listTeachCourses(signal?: AbortSignal, archived = false) {
+  return apiRequest<{ courses: CourseSummary[] }>('/api/v1/courses/teach', {
+    signal,
+    query: archived ? { archived: true } : undefined,
+  });
+}
+
+/** Archive (hide, read-only) or bring back a course. There is no delete. */
+export function setCourseArchived(id: string, archived: boolean) {
+  return apiRequest<Course>(`/api/v1/courses/${id}/${archived ? 'archive' : 'unarchive'}`, { method: 'POST' });
+}
+
+/** Training managers: every course with its trainers. */
+export function listCourseStaff(q: string, signal?: AbortSignal) {
+  return apiRequest<{ courses: StaffedCourse[] }>('/api/v1/course-staff', { query: { q }, signal });
 }
 
 export function createCourse(body: { title: string; summary?: string; self_enrol?: boolean }) {
@@ -209,7 +249,8 @@ export function listEnrolments(courseId: string, signal?: AbortSignal) {
   return apiRequest<{ enrolments: Enrolment[] }>(`/api/v1/courses/${courseId}/enrolments`, { signal });
 }
 
-export function enrolPerson(courseId: string, body: { user_id: string; role?: 'learner' | 'trainer' }) {
+/** A trainer role needs staff.manage (training managers). */
+export function enrolPerson(courseId: string, body: PersonRef & { role?: 'learner' | 'trainer' }) {
   return apiRequest<Enrolment>(`/api/v1/courses/${courseId}/enrolments`, { method: 'POST', body });
 }
 
@@ -222,5 +263,5 @@ export function unenrol(enrolmentId: string) {
 }
 
 export function searchPeople(q: string, signal?: AbortSignal) {
-  return apiRequest<{ people: Person[] }>('/api/v1/users', { query: { q }, signal });
+  return apiRequest<{ people: Person[]; source: PeopleSource }>('/api/v1/users', { query: { q }, signal });
 }

@@ -257,8 +257,15 @@ export function submitAttempt(id: string, answers: Record<string, string[]>, tap
   return apiRequest<Attempt>(`/api/v1/attempts/${id}/submit`, { method: 'POST', body: { answers, taps } });
 }
 
-export function resetAttempts(activityId: string) {
-  return apiRequest<{ deleted: number }>(`/api/v1/activities/${activityId}/attempts`, { method: 'DELETE' });
+/**
+ * Course managers only. confirm must be the quiz's title. Deletes the
+ * current cycle's attempts and completions; past cycles and certificates stay.
+ */
+export function resetAttempts(activityId: string, confirm: string) {
+  return apiRequest<{ attempts: number; completions: number }>(`/api/v1/activities/${activityId}/reset`, {
+    method: 'POST',
+    body: { confirm },
+  });
 }
 
 export function getGradebook(courseId: string, signal?: AbortSignal) {

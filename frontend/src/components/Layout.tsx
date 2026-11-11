@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { BarChart3, GraduationCap, LogOut, Menu, Presentation, Settings, X } from 'lucide-react';
+import { Award, BarChart3, GraduationCap, LogOut, Menu, Presentation, Settings, UsersRound, X } from 'lucide-react';
 import { getReportScope } from '@/api/reports';
 import { isOidcAuthMode, signOutOidc } from '@/auth/oidc';
 import { DenConnection } from '@/components/DenConnection';
@@ -26,6 +26,8 @@ type NavItem = {
 const NAV: NavItem[] = [
   { to: '/courses', label: 'nav.myCourses', icon: GraduationCap, perms: [] },
   { to: '/teach', label: 'nav.teach', icon: Presentation, perms: [PERMS.courseTeach, PERMS.courseManage] },
+  { to: '/course-roles', label: 'nav.courseRoles', icon: UsersRound, perms: [PERMS.staffManage] },
+  { to: '/qualifications', label: 'nav.qualifications', icon: Award, perms: [PERMS.qualificationManage] },
   { to: '/reports', label: 'nav.reports', icon: BarChart3, perms: [PERMS.reportView], courseStaff: true },
   { to: '/settings', label: 'nav.settings', icon: Settings, perms: [PERMS.settingsManage] },
 ];

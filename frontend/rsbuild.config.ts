@@ -13,6 +13,7 @@ const viteEnv = {
   VITE_OIDC_SCOPE: process.env.VITE_OIDC_SCOPE ?? 'openid profile email',
   VITE_API_BASE_URL: process.env.VITE_API_BASE_URL ?? '',
   VITE_PRODUCT_NAME: process.env.VITE_PRODUCT_NAME ?? 'Learn',
+  VITE_OIDC_MONITOR_SESSION: process.env.VITE_OIDC_MONITOR_SESSION ?? 'true',
 } as const;
 
 export default defineConfig({
@@ -27,6 +28,7 @@ export default defineConfig({
       'import.meta.env.VITE_OIDC_SCOPE': JSON.stringify(viteEnv.VITE_OIDC_SCOPE),
       'import.meta.env.VITE_API_BASE_URL': JSON.stringify(viteEnv.VITE_API_BASE_URL),
       'import.meta.env.VITE_PRODUCT_NAME': JSON.stringify(viteEnv.VITE_PRODUCT_NAME),
+      'import.meta.env.VITE_OIDC_MONITOR_SESSION': JSON.stringify(viteEnv.VITE_OIDC_MONITOR_SESSION),
     },
   },
   resolve: {

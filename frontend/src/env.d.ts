@@ -7,6 +7,7 @@ interface ImportMetaEnv {
   readonly VITE_OIDC_SCOPE?: string;
   readonly VITE_API_BASE_URL?: string;
   readonly VITE_PRODUCT_NAME?: string;
+  readonly VITE_OIDC_MONITOR_SESSION?: string;
   readonly MODE: string;
   readonly DEV: boolean;
   readonly PROD: boolean;

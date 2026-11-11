@@ -37,7 +37,7 @@ export function getUserManager(): UserManager | null {
     scope,
     automaticSilentRenew: true,
     silent_redirect_uri: `${window.location.origin}/silent-callback.html`,
-    monitorSession: true,
+    monitorSession: runtimeConfig().monitorSession,
     // Shared by all tabs so a sign-out / user switch reaches every tab (see session.ts).
     userStore: new WebStorageStateStore({ store: window.localStorage }),
   });

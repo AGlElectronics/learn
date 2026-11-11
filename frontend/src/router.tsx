@@ -22,6 +22,9 @@ import { TeachPage } from '@/pages/TeachPage';
 import { ReportsPage } from '@/pages/ReportsPage';
 import { PathsPage } from '@/pages/PathsPage';
 import { PathPage } from '@/pages/PathPage';
+import { AuditPage } from '@/pages/AuditPage';
+import { CourseStaffPage } from '@/pages/CourseStaffPage';
+import { QualificationsPage } from '@/pages/QualificationsPage';
 import { getUserManager, isOidcAuthMode } from '@/auth/oidc';
 
 // In OIDC mode a route behind the Layout checks there is a cached user
@@ -149,6 +152,27 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
+const auditRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/audit',
+  beforeLoad: ({ location }) => requireAuth(location.pathname),
+  component: AuditPage,
+});
+
+const courseStaffRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/course-roles',
+  beforeLoad: ({ location }) => requireAuth(location.pathname),
+  component: CourseStaffPage,
+});
+
+const qualificationsRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/qualifications',
+  beforeLoad: ({ location }) => requireAuth(location.pathname),
+  component: QualificationsPage,
+});
+
 const reportsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: '/reports',
@@ -185,6 +209,9 @@ const routeTree = rootRoute.addChildren([
     checkinRoute,
     certificateRoute,
     settingsRoute,
+    auditRoute,
+    courseStaffRoute,
+    qualificationsRoute,
     reportsRoute,
     pathsRoute,
     pathRoute,

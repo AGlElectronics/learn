@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { BookPlus, Copy, Pencil, Route } from 'lucide-react';
+import { Archive, BookPlus, Copy, Pencil, Route } from 'lucide-react';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input, Label } from '@/components/ui/Input';
@@ -21,9 +21,10 @@ export function TeachPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const t = useT();
+  const [showArchived, setShowArchived] = useState(false);
   const coursesQ = useQuery({
-    queryKey: ['courses', 'teach'],
-    queryFn: ({ signal }) => listTeachCourses(signal),
+    queryKey: ['courses', 'teach', showArchived],
+    queryFn: ({ signal }) => listTeachCourses(signal, showArchived),
     retry: false,
   });
 
@@ -47,12 +48,18 @@ export function TeachPage() {
         title={t('nav.teach')}
         description={t('teach.homeDescription')}
         actions={
-          can(PERMS.courseManage) ? (
-            <LinkButton to="/teach/paths" variant="secondary" size="sm">
-              <Route className="w-4 h-4" />
-              {t('paths.title')}
-            </LinkButton>
-          ) : null
+          <>
+            <Button variant="ghost" size="sm" aria-pressed={showArchived} onClick={() => setShowArchived(!showArchived)}>
+              <Archive className="w-4 h-4" />
+              {showArchived ? t('teach.showLive') : t('teach.showArchived')}
+            </Button>
+            {can(PERMS.courseManage) ? (
+              <LinkButton to="/teach/paths" variant="secondary" size="sm">
+                <Route className="w-4 h-4" />
+                {t('paths.title')}
+              </LinkButton>
+            ) : null}
+          </>
         }
       />
       {copying ? <CopyCourseDialog course={copying} onClose={() => setCopying(null)} /> : null}
@@ -77,7 +84,7 @@ export function TeachPage() {
                             : 'text-[11px] font-semibold rounded-pill bg-secondary text-muted-foreground px-2 py-0.5'
                         }
                       >
-                        {c.published ? t('teach.published') : t('teach.draft')}
+                        {c.archived_at ? t('teach.archived') : c.published ? t('teach.published') : t('teach.draft')}
                       </span>
                     </div>
                     {c.summary ? <CardDescription>{c.summary}</CardDescription> : null}

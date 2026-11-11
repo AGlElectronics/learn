@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
 import {
+  Archive,
+  ArchiveRestore,
   ArrowLeft,
   CalendarClock,
   ClipboardCheck,
@@ -40,13 +42,17 @@ import {
   enrolPerson,
   getCourse,
   listEnrolments,
-  searchPeople,
+  personRef,
+  setCourseArchived,
   setCoursePublished,
   unenrol,
   updateActivity,
   updateCourse,
   type Activity,
+  type Person,
 } from '@/api/courses';
+import { PeoplePicker } from '@/components/PeoplePicker';
+import { PERMS, useMe } from '@/hooks/useMe';
 import { getLocale, useT } from '@/i18n';
 
 /**
@@ -75,6 +81,10 @@ export function TeachCoursePage() {
   });
   const selfEnrolToggle = useMutation({
     mutationFn: (self_enrol: boolean) => updateCourse(courseId, { self_enrol }),
+    onSuccess: refresh,
+  });
+  const archive = useMutation({
+    mutationFn: (archived: boolean) => setCourseArchived(courseId, archived),
     onSuccess: refresh,
   });
 
@@ -112,9 +122,12 @@ export function TeachCoursePage() {
     );
   }
   const course = courseQ.data!;
-  const mutationError = (publish.error ?? selfEnrolToggle.error ?? addSection.error ?? removeSection.error) as
-    | Error
-    | null;
+  const archived = course.archived_at != null;
+  const mutationError = (publish.error ??
+    selfEnrolToggle.error ??
+    archive.error ??
+    addSection.error ??
+    removeSection.error) as Error | null;
 
   return (
     <PageContainer>
@@ -131,27 +144,47 @@ export function TeachCoursePage() {
               <GraduationCap className="w-4 h-4" />
               {t('teach.grades')}
             </LinkButton>
+            {!archived ? (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={selfEnrolToggle.isPending}
+                  onClick={() => selfEnrolToggle.mutate(!course.self_enrol)}
+                >
+                  {course.self_enrol ? t('teach.selfEnrolOn') : t('teach.selfEnrolOff')}
+                </Button>
+                <Button
+                  variant={course.published ? 'secondary' : 'primary'}
+                  size="sm"
+                  disabled={publish.isPending}
+                  onClick={() => publish.mutate(!course.published)}
+                >
+                  {course.published ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  {course.published ? t('teach.unpublish') : t('teach.publish')}
+                </Button>
+              </>
+            ) : null}
             <Button
-              variant="secondary"
+              variant="ghost"
               size="sm"
-              disabled={selfEnrolToggle.isPending}
-              onClick={() => selfEnrolToggle.mutate(!course.self_enrol)}
+              disabled={archive.isPending}
+              onClick={() => {
+                if (archived || confirm(t('teach.confirmArchive', { title: course.title }))) archive.mutate(!archived);
+              }}
             >
-              {course.self_enrol ? t('teach.selfEnrolOn') : t('teach.selfEnrolOff')}
-            </Button>
-            <Button
-              variant={course.published ? 'secondary' : 'primary'}
-              size="sm"
-              disabled={publish.isPending}
-              onClick={() => publish.mutate(!course.published)}
-            >
-              {course.published ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              {course.published ? t('teach.unpublish') : t('teach.publish')}
+              {archived ? <ArchiveRestore className="w-4 h-4" /> : <Archive className="w-4 h-4" />}
+              {archived ? t('teach.unarchive') : t('teach.archive')}
             </Button>
           </>
         }
       />
-      {!course.published ? (
+      {archived ? (
+        <p role="status" className="text-sm rounded-md border border-border bg-muted px-3 py-2 -mt-4 mb-6">
+          {t('teach.archivedHint')}
+        </p>
+      ) : null}
+      {!course.published && !archived ? (
         <p className="text-sm text-muted-foreground -mt-4 mb-6">
           {t('teach.draftHint')}
         </p>
@@ -215,8 +248,8 @@ export function TeachCoursePage() {
         </div>
 
         <div className="space-y-6">
-          <EnrolmentsPanel courseId={courseId} />
-          <GroupLinksPanel courseId={courseId} />
+          <EnrolmentsPanel courseId={courseId} archived={archived} />
+          <GroupLinksPanel courseId={courseId} archived={archived} />
           <FeedbackPanel courseId={courseId} />
           <TeamBoardSettingsPanel target="course" id={courseId} />
         </div>
@@ -502,37 +535,37 @@ function PageEditor({
   );
 }
 
-function EnrolmentsPanel({ courseId }: { courseId: string }) {
+/**
+ * People on the course. Trainers add and remove learners; only training
+ * managers (staff.manage) add or remove trainers, and the last trainer
+ * always stays (the server answers 409).
+ */
+function EnrolmentsPanel({ courseId, archived }: { courseId: string; archived: boolean }) {
   const qc = useQueryClient();
   const t = useT();
+  const { can } = useMe();
+  const manageStaff = can(PERMS.staffManage);
   const enrolmentsQ = useQuery({
     queryKey: ['enrolments', courseId],
     queryFn: ({ signal }) => listEnrolments(courseId, signal),
     retry: false,
   });
-  const [q, setQ] = useState('');
-  const peopleQ = useQuery({
-    queryKey: ['people', q],
-    queryFn: ({ signal }) => searchPeople(q, signal),
-    enabled: q.trim().length > 0,
-  });
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['enrolments', courseId] });
   };
   const add = useMutation({
-    mutationFn: ({ userId, role }: { userId: string; role: 'learner' | 'trainer' }) =>
-      enrolPerson(courseId, { user_id: userId, role }),
-    onSuccess: () => {
-      setQ('');
-      refresh();
-    },
+    mutationFn: ({ person, role }: { person: Person; role: 'learner' | 'trainer' }) =>
+      enrolPerson(courseId, { ...personRef(person), role }),
+    onSuccess: refresh,
   });
   const remove = useMutation({
     mutationFn: (enrolmentId: string) => unenrol(enrolmentId),
     onSuccess: refresh,
   });
 
-  const enrolledIds = new Set((enrolmentsQ.data?.enrolments ?? []).map((e) => e.user_id));
+  const enrolments = enrolmentsQ.data?.enrolments ?? [];
+  const enrolledIds = new Set(enrolments.map((e) => e.user_id));
+  const activeTrainers = enrolments.filter((e) => e.role === 'trainer' && e.status === 'active').length;
 
   return (
     <Card className="h-fit">
@@ -549,99 +582,96 @@ function EnrolmentsPanel({ courseId }: { courseId: string }) {
           <ErrorRow message={t('people.loadError')} />
         ) : (
           <ul className="space-y-2">
-            {(enrolmentsQ.data?.enrolments ?? []).map((e) => (
-              <li key={e.id} className="flex items-center justify-between gap-2 text-sm">
-                <div className="min-w-0">
-                  <p className="font-medium truncate">{e.display_name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {e.role === 'trainer' ? t('role.trainer') : t('role.learner')}
-                    {e.role === 'learner' && e.progress.total > 0
-                      ? ` · ${t('people.done', { done: e.progress.completed, total: e.progress.total })}`
-                      : ''}
-                  </p>
-                  {e.role === 'learner' && e.status === 'active' ? (
-                    <EnrolmentDueControl enrolment={e} onChanged={refresh} />
+            {enrolments.map((e) => {
+              const canRemove =
+                !archived && (e.role === 'learner' || (manageStaff && !(e.status === 'active' && activeTrainers <= 1)));
+              return (
+                <li key={e.id} className="flex items-center justify-between gap-2 text-sm">
+                  <div className="min-w-0">
+                    <p className="font-medium truncate">{e.display_name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {e.role === 'trainer' ? t('role.trainer') : t('role.learner')}
+                      {e.email ? ` · ${e.email}` : ''}
+                      {e.role === 'learner' && e.progress.total > 0
+                        ? ` · ${t('people.done', { done: e.progress.completed, total: e.progress.total })}`
+                        : ''}
+                    </p>
+                    {e.role === 'learner' && e.status === 'active' && !archived ? (
+                      <EnrolmentDueControl enrolment={e} onChanged={refresh} />
+                    ) : null}
+                    {e.source === 'group' || e.status === 'inactive' ? (
+                      <div className="flex flex-wrap gap-1 mt-0.5">
+                        {e.source === 'group' ? (
+                          <span className="rounded-full bg-primary-soft text-primary px-2 py-0.5 text-[11px] font-semibold">
+                            {t('people.synced')}
+                          </span>
+                        ) : null}
+                        {e.status === 'inactive' ? (
+                          <span
+                            className="rounded-full bg-muted text-muted-foreground px-2 py-0.5 text-[11px] font-semibold"
+                            title={e.left_group_at ? t('people.leftAt', { date: new Date(e.left_group_at).toLocaleString(getLocale()) }) : undefined}
+                          >
+                            {t('people.inactive')}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                  {canRemove ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive shrink-0"
+                      title={t('people.remove')}
+                      disabled={remove.isPending}
+                      onClick={() => {
+                        if (confirm(t('people.confirmRemove', { name: e.display_name }))) remove.mutate(e.id);
+                      }}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
                   ) : null}
-                  {e.source === 'group' || e.status === 'inactive' ? (
-                    <div className="flex flex-wrap gap-1 mt-0.5">
-                      {e.source === 'group' ? (
-                        <span className="rounded-full bg-primary-soft text-primary px-2 py-0.5 text-[11px] font-semibold">
-                          {t('people.synced')}
-                        </span>
-                      ) : null}
-                      {e.status === 'inactive' ? (
-                        <span
-                          className="rounded-full bg-muted text-muted-foreground px-2 py-0.5 text-[11px] font-semibold"
-                          title={e.left_group_at ? t('people.leftAt', { date: new Date(e.left_group_at).toLocaleString(getLocale()) }) : undefined}
-                        >
-                          {t('people.inactive')}
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive shrink-0"
-                  disabled={remove.isPending}
-                  onClick={() => {
-                    if (confirm(t('people.confirmRemove', { name: e.display_name }))) remove.mutate(e.id);
-                  }}
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
+        {!manageStaff ? <p className="text-xs text-muted-foreground">{t('people.trainersByManager')}</p> : null}
+        {remove.isError ? <ErrorRow message={(remove.error as Error).message} /> : null}
 
-        <div className="border-t border-border pt-3">
-          <Label htmlFor="person-search">{t('people.add')}</Label>
-          <Input
-            id="person-search"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder={t('people.searchPlaceholder')}
-          />
-          {q.trim() && peopleQ.data ? (
-            <ul className="mt-2 space-y-1">
-              {peopleQ.data.people
-                .filter((p) => !enrolledIds.has(p.id))
-                .map((p) => (
-                  <li key={p.id} className="flex items-center justify-between gap-2 text-sm">
-                    <span className="truncate">
-                      {p.display_name}
-                      {p.email ? <span className="text-muted-foreground"> · {p.email}</span> : null}
-                    </span>
-                    <span className="flex gap-1 shrink-0">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={add.isPending}
-                        onClick={() => add.mutate({ userId: p.id, role: 'learner' })}
-                      >
-                        <UserPlus className="w-4 h-4" />
-                        {t('role.learner')}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={add.isPending}
-                        onClick={() => add.mutate({ userId: p.id, role: 'trainer' })}
-                      >
-                        {t('role.trainer')}
-                      </Button>
-                    </span>
-                  </li>
-                ))}
-              {peopleQ.data.people.filter((p) => !enrolledIds.has(p.id)).length === 0 ? (
-                <li className="text-sm text-muted-foreground">{t('people.noMatch')}</li>
-              ) : null}
-            </ul>
-          ) : null}
-          {add.isError ? <p className="text-sm text-destructive mt-2">{(add.error as Error).message}</p> : null}
-        </div>
+        {!archived ? (
+          <div className="border-t border-border pt-3">
+            <PeoplePicker
+              id="person-search"
+              label={t('people.add')}
+              exclude={enrolledIds}
+              actions={(p) => (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={add.isPending}
+                    onClick={() => add.mutate({ person: p, role: 'learner' })}
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    {t('role.learner')}
+                  </Button>
+                  {manageStaff ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={add.isPending}
+                      onClick={() => add.mutate({ person: p, role: 'trainer' })}
+                    >
+                      {t('role.trainer')}
+                    </Button>
+                  ) : null}
+                </>
+              )}
+            />
+            {add.isError ? <p className="text-sm text-destructive mt-2">{(add.error as Error).message}</p> : null}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

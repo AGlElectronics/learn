@@ -1,6 +1,6 @@
 import { apiRequest } from '@/api/client';
 import type { Progress } from '@/api/courses';
-import type { GroupSyncResult } from '@/api/groups';
+import type { GroupLinksResponse, GroupSyncResult } from '@/api/groups';
 import type { QualificationRef } from '@/api/qualifications';
 
 export type PathCourse = {
@@ -44,7 +44,11 @@ export type PathEnrolment = {
 
 export type PathGroupLink = {
   path_id: string;
+  /** Normalised key; use it to unlink. */
   group_name: string;
+  /** Full path as the directory spells it. */
+  group_path: string;
+  path_resolved: boolean;
   created_at: string;
   last_synced_at: string | null;
   last_sync_error: string;
@@ -122,13 +126,14 @@ export function selfEnrolPath(id: string) {
 }
 
 export function listPathGroupLinks(id: string, signal?: AbortSignal) {
-  return apiRequest<{ links: PathGroupLink[]; sync_available: boolean }>(`/api/v1/paths/${id}/group-links`, { signal });
+  return apiRequest<GroupLinksResponse<PathGroupLink>>(`/api/v1/paths/${id}/group-links`, { signal });
 }
 
-export function addPathGroupLink(id: string, groupName: string) {
+/** groupPath is the group's full path, e.g. /learn/cohort-a. */
+export function addPathGroupLink(id: string, groupPath: string) {
   return apiRequest<{ link: PathGroupLink; sync: GroupSyncResult | null; sync_error?: string }>(
     `/api/v1/paths/${id}/group-links`,
-    { method: 'POST', body: { group_name: groupName } }
+    { method: 'POST', body: { group_path: groupPath } }
   );
 }
 

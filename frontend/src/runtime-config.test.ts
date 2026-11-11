@@ -58,6 +58,18 @@ describe('loadRuntimeConfig', () => {
     await expect(result).rejects.toMatchObject({ detail: '"oidcAuthority" must be a string.' });
   });
 
+  it('watches the login session by default and lets the file turn it off', async () => {
+    const on = await load(200, JSON.stringify({ authMode: 'oidc', oidcAuthority: 'https://a.test', oidcClientId: 'c' }));
+    await expect(on.result).resolves.toMatchObject({ monitorSession: true });
+    const off = await load(
+      200,
+      JSON.stringify({ authMode: 'oidc', oidcAuthority: 'https://a.test', oidcClientId: 'c', monitorSession: false })
+    );
+    await expect(off.result).resolves.toMatchObject({ monitorSession: false });
+    const bad = await load(200, JSON.stringify({ monitorSession: 'no' }));
+    await expect(bad.result).rejects.toMatchObject({ detail: '"monitorSession" must be a boolean.' });
+  });
+
   it('rejects an unknown auth mode', async () => {
     const { result } = await load(200, JSON.stringify({ authMode: 'none' }));
     await expect(result).rejects.toMatchObject({ detail: '"authMode" must be "oidc" or "dev".' });

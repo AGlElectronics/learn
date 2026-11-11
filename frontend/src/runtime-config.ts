@@ -14,6 +14,13 @@ export type RuntimeConfig = {
   oidcScope: string;
   apiBaseUrl: string;
   productName: string;
+  /**
+   * Watch the identity provider's session in a hidden iframe and sign out
+   * when it ends there (OIDC session management). Turn off for identity
+   * providers without check_session_iframe or behind third-party-cookie
+   * blocking, where it signs people out at random.
+   */
+  monitorSession: boolean;
 };
 
 const KEYS: Record<keyof RuntimeConfig, 'string' | 'boolean'> = {
@@ -23,6 +30,7 @@ const KEYS: Record<keyof RuntimeConfig, 'string' | 'boolean'> = {
   oidcScope: 'string',
   apiBaseUrl: 'string',
   productName: 'string',
+  monitorSession: 'boolean',
 };
 
 const DEFAULT_SCOPE = 'openid profile email';
@@ -36,6 +44,7 @@ const buildTime: RuntimeConfig = {
   oidcScope: (import.meta.env.VITE_OIDC_SCOPE ?? '').trim() || DEFAULT_SCOPE,
   apiBaseUrl: (import.meta.env.VITE_API_BASE_URL ?? '').trim(),
   productName: (import.meta.env.VITE_PRODUCT_NAME ?? '').trim(),
+  monitorSession: (import.meta.env.VITE_OIDC_MONITOR_SESSION ?? '').trim() !== 'false',
 };
 
 let current: RuntimeConfig = buildTime;

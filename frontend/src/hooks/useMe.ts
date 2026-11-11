@@ -6,6 +6,8 @@ export const PERMS = {
   courseManage: 'course.manage',
   courseTeach: 'course.teach',
   enrolManage: 'enrol.manage',
+  staffManage: 'staff.manage',
+  qualificationManage: 'qualification.manage',
   settingsManage: 'settings.manage',
   reportView: 'report.view',
 } as const;
