@@ -1,14 +1,16 @@
-package denlink
+package denlink_test
 
-// Pair, Sync, Unpair and preferences against a fake Den and a real
-// PostgreSQL. They run only when TEST_DATABASE_URL is set and MIGRATE THE
-// DATABASE FROM SCRATCH (drop and recreate the public schema): point it at
-// a disposable database.
+// Learn's own test of the shared denlink copy: Pair, Sync, Unpair,
+// preferences and the revoked state against a fake Den and Learn's real
+// migrations (so a missing den_link column fails here). They run only when
+// TEST_DATABASE_URL is set and MIGRATE THE DATABASE FROM SCRATCH (drop and
+// recreate the public schema): point it at a disposable database.
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -24,10 +26,11 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/AGlElectronics/learn/backend/internal/db"
+	"github.com/AGlElectronics/learn/backend/internal/denlink"
 	"github.com/AGlElectronics/learn/backend/migrations"
 )
 
-func testPool(t *testing.T) *pgxpool.Pool {
+func learnPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -60,16 +63,16 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// fakeDen redeems one pairing token and serves the bundle, a logo and
+// learnDen redeems one pairing token and serves the bundle, a logo and
 // preferences to the credential it handed out, until revoked.
-type fakeDen struct {
+type learnDen struct {
 	mu       sync.Mutex
 	revoked  bool
 	theme    string
 	redeemed map[string]string
 }
 
-func (f *fakeDen) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *learnDen) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
@@ -92,7 +95,8 @@ func (f *fakeDen) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/v1/integrations/bundle":
 		_, _ = w.Write([]byte(`{"brand":{"revision":3,"organization_name":"Con Org","theme":{"primary":"#123"},
-			"assets":{"logo":"logo-1"}},"settings":{"data":{"timezone":"Europe/Amsterdam","retention":{"inactive_user_months":24}}}}`))
+			"assets":{"logo":"logo-1"}},"settings":{"data":{"timezone":"Europe/Amsterdam"}},
+			"module_settings":{"data":{"retention":{"inactive_users_days":365},"learn":{"audit_log_days":90}}}}`))
 	case "/api/v1/integrations/branding/assets/logo-1":
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte("\x89PNG"))
@@ -113,12 +117,12 @@ func (f *fakeDen) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestPairSyncUnpair(t *testing.T) {
-	pool := testPool(t)
+	pool := learnPool(t)
 	ctx := context.Background()
-	den := &fakeDen{}
+	den := &learnDen{}
 	srv := httptest.NewServer(den)
 	defer srv.Close()
-	c := New(pool, Config{Slug: "learn", Version: "1.0.0", Mode: ModeRequired}, zerolog.Nop())
+	c := denlink.New(pool, denlink.Config{AppEnv: "development", Slug: "learn", Version: "1.0.0", Mode: denlink.ModeRequired}, zerolog.Nop())
 
 	if _, err := c.Pair(ctx, "not a url"); err == nil {
 		t.Fatal("a malformed pairing URL was accepted")
@@ -126,7 +130,7 @@ func TestPairSyncUnpair(t *testing.T) {
 	if _, err := c.Pair(ctx, srv.URL+"/api/v1/integrations/pair?token=used"); err == nil || !strings.Contains(err.Error(), "already used") {
 		t.Fatalf("refused pairing = %v", err)
 	}
-	if err := c.Sync(ctx); err != ErrNotPaired {
+	if err := c.Sync(ctx); err != denlink.ErrNotPaired {
 		t.Fatalf("sync before pairing = %v", err)
 	}
 
@@ -143,10 +147,13 @@ func TestPairSyncUnpair(t *testing.T) {
 	if tz, ok := c.Setting("timezone"); !ok || tz != "Europe/Amsterdam" {
 		t.Fatalf("setting = %q %v", tz, ok)
 	}
-	if _, ok := c.Bundle().Settings.Data["retention"].(map[string]any); !ok {
-		t.Fatalf("retention not in the bundle: %v", c.Bundle().Settings.Data)
+	if d := c.ModuleSettings().Retention().InactiveUsersDays; d == nil || *d != 365 {
+		t.Fatalf("retention.inactive_users_days = %v", d)
 	}
-	if got := c.AssetURL("/api/v1/brand", AssetLogo); got != "/api/v1/brand/logo?v=logo-1" {
+	if d, ok := c.ModuleSettings().Days("learn.audit_log_days"); !ok || d != 90 {
+		t.Fatalf("learn.audit_log_days = %d %v", d, ok)
+	}
+	if got := c.AssetURL("/api/v1/brand", denlink.AssetLogo); got != "/api/v1/brand/logo?v=logo-1" {
 		t.Fatalf("asset URL = %q", got)
 	}
 
@@ -159,7 +166,7 @@ func TestPairSyncUnpair(t *testing.T) {
 	}
 
 	// A restarted module restores the pairing and the bundle from the database.
-	restarted := New(pool, Config{Slug: "learn", Mode: ModeRequired}, zerolog.Nop())
+	restarted := denlink.New(pool, denlink.Config{AppEnv: "development", Slug: "learn", Mode: denlink.ModeRequired}, zerolog.Nop())
 	if err := restarted.Restore(ctx); err != nil || !restarted.Linked() || restarted.OrganizationName() != "Con Org" {
 		t.Fatalf("restore: %v linked %v org %q", err, restarted.Linked(), restarted.OrganizationName())
 	}
@@ -167,14 +174,19 @@ func TestPairSyncUnpair(t *testing.T) {
 	den.mu.Lock()
 	den.revoked = true
 	den.mu.Unlock()
-	if err := c.Sync(ctx); err == nil || !strings.Contains(err.Error(), "rejected") {
+	if err := c.Sync(ctx); !errors.Is(err, denlink.ErrRevoked) {
 		t.Fatalf("sync after revoke = %v", err)
 	}
-	if st, _ := c.Status(ctx); !strings.Contains(st.LastError, "rejected") {
-		t.Fatalf("last error = %q", st.LastError)
+	if st, _ := c.Status(ctx); !st.Revoked || st.RevokedAt == nil {
+		t.Fatalf("status after revoke = %+v", st)
 	}
-	if !c.Paired() {
-		t.Fatal("a failed sync keeps the last good bundle")
+	if !c.Revoked() || !c.Paired() {
+		t.Fatalf("revoked %v paired %v: a rejected sync keeps the last good bundle", c.Revoked(), c.Paired())
+	}
+	// Restarting keeps the revoked state (den_link.revoked_at).
+	again := denlink.New(pool, denlink.Config{AppEnv: "development", Slug: "learn"}, zerolog.Nop())
+	if err := again.Restore(ctx); err != nil || !again.Revoked() {
+		t.Fatalf("restore after revoke: %v revoked %v", err, again.Revoked())
 	}
 
 	if err := c.Unpair(ctx); err != nil {
@@ -186,16 +198,16 @@ func TestPairSyncUnpair(t *testing.T) {
 	if st, err := c.Status(ctx); err != nil || st.Paired {
 		t.Fatalf("status after unpair = %+v %v", st, err)
 	}
-	if _, err := c.SetPreferences(ctx, "iss", "sub", "light"); err != ErrNotPaired {
+	if _, err := c.SetPreferences(ctx, "iss", "sub", "light"); err != denlink.ErrNotPaired {
 		t.Fatalf("preferences when standalone = %v", err)
 	}
 }
 
 func TestPairUsesInternalURL(t *testing.T) {
-	pool := testPool(t)
-	srv := httptest.NewServer(&fakeDen{})
+	pool := learnPool(t)
+	srv := httptest.NewServer(&learnDen{})
 	defer srv.Close()
-	c := New(pool, Config{Slug: "learn", InternalURL: srv.URL}, zerolog.Nop())
+	c := denlink.New(pool, denlink.Config{AppEnv: "development", Slug: "learn", InternalURL: srv.URL}, zerolog.Nop())
 	st, err := c.Pair(context.Background(), "https://den.example.invalid/api/v1/integrations/pair?token=pair-me")
 	if err != nil {
 		t.Fatal(err)
@@ -207,10 +219,10 @@ func TestPairUsesInternalURL(t *testing.T) {
 }
 
 func TestPairingHandlers(t *testing.T) {
-	pool := testPool(t)
-	srv := httptest.NewServer(&fakeDen{})
+	pool := learnPool(t)
+	srv := httptest.NewServer(&learnDen{})
 	defer srv.Close()
-	c := New(pool, Config{Slug: "learn"}, zerolog.Nop())
+	c := denlink.New(pool, denlink.Config{AppEnv: "development", Slug: "learn"}, zerolog.Nop())
 
 	do := func(h http.HandlerFunc, method, body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
