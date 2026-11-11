@@ -13,9 +13,12 @@ const (
 	// Being staff on a course is an enrolment with role "trainer", not a
 	// permission — the permission only opens the teaching feature.
 	RoleTrainer = "trainer"
-	// RoleCoordinator (team leads) only reads the completion and
-	// qualification reports.
+	// RoleCoordinator (team leads, the training office) reads the reports
+	// and manages qualifications and certificates.
 	RoleCoordinator = "coordinator"
+	// RoleTrainingManager decides who teaches: adds and removes trainers on
+	// every course of the organization, without editing course content.
+	RoleTrainingManager = "training_manager"
 )
 
 // Enrolment roles. An enrolment row is what links a person to one course;
@@ -57,9 +60,15 @@ const (
 	// PermCourseTeach: create courses; edit and enrol only on courses the
 	// holder staffs (enrolment role "trainer").
 	PermCourseTeach = "course.teach"
-	// PermEnrolManage: add and remove people on a course the holder may
-	// manage (see PermCourseManage / PermCourseTeach).
+	// PermEnrolManage: add and remove learners on a course the holder may
+	// manage (see PermCourseManage / PermCourseTeach). Never trainers.
 	PermEnrolManage = "enrol.manage"
+	// PermStaffManage: add and remove trainers (course roles) on every
+	// course of the organization. The last trainer of a course stays.
+	PermStaffManage = "staff.manage"
+	// PermQualificationManage: create, edit and delete qualifications, see
+	// every certificate and revoke certificates.
+	PermQualificationManage = "qualification.manage"
 	// PermSettingsManage: module settings, including the Den pairing.
 	PermSettingsManage = "settings.manage"
 	// PermReportView: completion and qualification reports for every
@@ -75,6 +84,8 @@ func AllPermissions() []string {
 		PermCourseManage,
 		PermCourseTeach,
 		PermEnrolManage,
+		PermStaffManage,
+		PermQualificationManage,
 		PermSettingsManage,
 		PermReportView,
 	}
@@ -88,6 +99,13 @@ func DefaultRolePermissions() map[string][]string {
 		RoleTrainer: {
 			PermCourseTeach,
 			PermEnrolManage,
+		},
+		RoleTrainingManager: {
+			PermStaffManage,
+		},
+		RoleCoordinator: {
+			PermReportView,
+			PermQualificationManage,
 		},
 	}
 }

@@ -21,9 +21,10 @@ type roleCatalogEntry struct {
 }
 
 var learnRoleDescriptions = map[string]string{
-	domain.RoleOrganizationAdmin: "Manages every course, enrolment and the module settings.",
+	domain.RoleOrganizationAdmin: "Manages every course, enrolment, qualification and the module settings.",
 	domain.RoleTrainer:           "Creates courses and runs the courses they teach.",
-	domain.RoleCoordinator:       "Team lead: sees the completion and qualification reports.",
+	domain.RoleTrainingManager:   "Decides who teaches: adds and removes trainers on every course.",
+	domain.RoleCoordinator:       "Training office: sees the reports and manages qualifications and certificates.",
 }
 
 // roleCatalogHandler serves GET /api/role-catalog (public, read-only). Roles

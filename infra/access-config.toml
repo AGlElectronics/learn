@@ -7,19 +7,22 @@
 # Permission reference — add new names in internal/domain/domain.go,
 # otherwise the loader rejects them.
 #
-#   Courses:    course.manage  (every course)   course.teach (own courses)
-#   Enrolment:  enrol.manage
-#   Settings:   settings.manage  (Den pairing, module settings)
-#   Reports:    report.view      (completion + qualification reports, all courses)
+#   Courses:        course.manage  (every course)   course.teach (own courses)
+#   Enrolment:      enrol.manage   (learners on courses the holder may edit)
+#   Course roles:   staff.manage   (add and remove trainers on every course)
+#   Qualifications: qualification.manage (qualifications, certificates, revoke)
+#   Settings:       settings.manage  (Den pairing, module settings, audit log)
+#   Reports:        report.view      (completion + qualification reports, all courses)
 #
 # A role listed here replaces its built-in permission set entirely.
 #
 # Course access for learners is NOT a role: an enrolment row (created by
 # course staff or by self-enrolment) is what lets a person read a published
-# course. There is deliberately no "learn-learner" group.
+# course. There is deliberately no "learn-learner" group. Trainers are also
+# enrolments (role "trainer"); only staff.manage may add or remove them.
 
 # Organization (slug) that bindings grant roles in, unless a binding sets
-# its own `organization`.
+# its own `organization`. Everyone who signs in belongs to this organization.
 organization = "demo-org"
 
 # -------------------------------------------------------------------------
@@ -27,10 +30,12 @@ organization = "demo-org"
 # -------------------------------------------------------------------------
 
 [roles.organization_admin]
-description = "Manages every course, enrolment and the module settings."
+description = "Manages every course, enrolment, qualification and the module settings."
 permissions = [
   "course.manage",
   "enrol.manage",
+  "staff.manage",
+  "qualification.manage",
   "settings.manage",
   "report.view",
 ]
@@ -42,10 +47,17 @@ permissions = [
   "enrol.manage",
 ]
 
+[roles.training_manager]
+description = "Decides who teaches: adds and removes trainers on every course."
+permissions = [
+  "staff.manage",
+]
+
 [roles.coordinator]
-description = "Team lead: sees the completion and qualification reports."
+description = "Training office: sees the reports and manages qualifications and certificates."
 permissions = [
   "report.view",
+  "qualification.manage",
 ]
 
 # -------------------------------------------------------------------------
@@ -60,6 +72,10 @@ role = "organization_admin"
 [[bindings]]
 group = "learn-trainer"
 role = "trainer"
+
+[[bindings]]
+group = "learn-manager"
+role = "training_manager"
 
 [[bindings]]
 group = "learn-coordinator"

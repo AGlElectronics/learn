@@ -13,9 +13,9 @@ import (
 	"github.com/AGlElectronics/learn/backend/internal/learn"
 )
 
-// qualificationHandler owns qualifications (settings.manage), the course's
+// qualificationHandler owns qualifications (qualification.manage), the course's
 // awarded qualification (course staff), certificates (holder or staff;
-// revoking needs settings.manage) and renewal (the learner).
+// revoking needs qualification.manage) and renewal (the learner).
 type qualificationHandler struct {
 	*courseHandler
 	publicBaseURL string
@@ -56,13 +56,13 @@ func (h *qualificationHandler) list(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, httperror.ErrUnauthorized)
 		return
 	}
-	if !u.HasAny(domain.PermSettingsManage) && !u.HasAny(domain.PermCourseManage) && !u.HasAny(domain.PermCourseTeach) {
+	if !u.HasAny(domain.PermQualificationManage) && !u.HasAny(domain.PermCourseManage) && !u.HasAny(domain.PermCourseTeach) {
 		httperror.Render(w, r, httperror.ErrForbidden)
 		return
 	}
 	orgs := []uuid.UUID{}
 	for orgID := range u.OrgPermissions {
-		if u.HasInOrg(domain.PermSettingsManage, orgID) || u.HasInOrg(domain.PermCourseManage, orgID) ||
+		if u.HasInOrg(domain.PermQualificationManage, orgID) || u.HasInOrg(domain.PermCourseManage, orgID) ||
 			u.HasInOrg(domain.PermCourseTeach, orgID) {
 			orgs = append(orgs, orgID)
 		}
@@ -98,13 +98,13 @@ func (h *qualificationHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	var orgID uuid.UUID
 	for id := range u.OrgPermissions {
-		if u.HasInOrg(domain.PermSettingsManage, id) {
+		if u.HasInOrg(domain.PermQualificationManage, id) {
 			orgID = id
 			break
 		}
 	}
 	if orgID == uuid.Nil {
-		httperror.Render(w, r, httperror.New(httperror.CodeForbidden, "missing permission: "+domain.PermSettingsManage))
+		httperror.Render(w, r, httperror.New(httperror.CodeForbidden, "missing permission: "+domain.PermQualificationManage))
 		return
 	}
 	var in qualificationBody
@@ -121,7 +121,7 @@ func (h *qualificationHandler) create(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadManagedQualification loads {qualification} and requires
-// settings.manage in its organization.
+// qualification.manage in its organization.
 func (h *qualificationHandler) loadManagedQualification(r *http.Request) (learn.Qualification, error) {
 	id, err := parseUUIDParam(r, "qualification")
 	if err != nil {
@@ -131,7 +131,7 @@ func (h *qualificationHandler) loadManagedQualification(r *http.Request) (learn.
 	if err != nil {
 		return learn.Qualification{}, err
 	}
-	if err := auth.RequireInOrg(r.Context(), domain.PermSettingsManage, q.OrganizationID); err != nil {
+	if err := auth.RequireInOrg(r.Context(), domain.PermQualificationManage, q.OrganizationID); err != nil {
 		return learn.Qualification{}, err
 	}
 	return q, nil
@@ -262,14 +262,14 @@ func (h *qualificationHandler) mine(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"qualifications": list})
 }
 
-// canSeeCertificate: the holder, settings/course managers of the org, or
+// canSeeCertificate: the holder, qualification/course managers of the org, or
 // staff of the course that awarded it.
 func (h *qualificationHandler) canSeeCertificate(r *http.Request, c learn.Certificate) (bool, error) {
 	u, err := auth.MustFromContext(r.Context())
 	if err != nil {
 		return false, httperror.ErrUnauthorized
 	}
-	if c.UserID == u.ID || u.HasInOrg(domain.PermSettingsManage, c.OrganizationID) ||
+	if c.UserID == u.ID || u.HasInOrg(domain.PermQualificationManage, c.OrganizationID) ||
 		u.HasInOrg(domain.PermCourseManage, c.OrganizationID) {
 		return true, nil
 	}
@@ -310,7 +310,7 @@ func (h *qualificationHandler) getCertificate(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, h.withURL(c))
 }
 
-// revoke: {reason}. settings.manage in the qualification's organization.
+// revoke: {reason}. qualification.manage in the qualification's organization.
 func (h *qualificationHandler) revoke(w http.ResponseWriter, r *http.Request) {
 	u, err := auth.MustFromContext(r.Context())
 	if err != nil {
@@ -327,7 +327,7 @@ func (h *qualificationHandler) revoke(w http.ResponseWriter, r *http.Request) {
 		httperror.Render(w, r, err)
 		return
 	}
-	if err := auth.RequireInOrg(r.Context(), domain.PermSettingsManage, c.OrganizationID); err != nil {
+	if err := auth.RequireInOrg(r.Context(), domain.PermQualificationManage, c.OrganizationID); err != nil {
 		httperror.Render(w, r, err)
 		return
 	}

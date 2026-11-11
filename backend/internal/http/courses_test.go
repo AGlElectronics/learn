@@ -41,11 +41,19 @@ organization = "demo-org"
 
 [roles.organization_admin]
 description = "Admin"
-permissions = ["course.manage", "enrol.manage", "settings.manage"]
+permissions = ["course.manage", "enrol.manage", "staff.manage", "qualification.manage", "settings.manage"]
 
 [roles.trainer]
 description = "Trainer"
 permissions = ["course.teach", "enrol.manage"]
+
+[roles.training_manager]
+description = "Training manager"
+permissions = ["staff.manage"]
+
+[roles.coordinator]
+description = "Training office"
+permissions = ["report.view", "qualification.manage"]
 
 [[bindings]]
 group = "learn-admin"
@@ -54,6 +62,14 @@ role = "organization_admin"
 [[bindings]]
 group = "learn-trainer"
 role = "trainer"
+
+[[bindings]]
+group = "learn-manager"
+role = "training_manager"
+
+[[bindings]]
+group = "learn-coordinator"
+role = "coordinator"
 `
 
 // identity is a dev-mode caller: a name plus simulated IdP groups.
@@ -377,7 +393,10 @@ func TestRoleCatalogIsPublic(t *testing.T) {
 	if out.Module != "learn" {
 		t.Fatalf("role catalog module = %q, want learn", out.Module)
 	}
-	want := map[string]string{"organization_admin": "learn-admin", "trainer": "learn-trainer"}
+	want := map[string]string{
+		"organization_admin": "learn-admin", "trainer": "learn-trainer",
+		"training_manager": "learn-manager", "coordinator": "learn-coordinator",
+	}
 	for _, r := range out.Roles {
 		group, ok := want[r.Key]
 		if !ok || r.Group != group || !r.Assignable {

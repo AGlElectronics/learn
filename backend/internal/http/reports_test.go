@@ -34,7 +34,7 @@ organization = "demo-org"
 
 [roles.organization_admin]
 description = "Admin"
-permissions = ["course.manage", "enrol.manage", "settings.manage", "report.view"]
+permissions = ["course.manage", "enrol.manage", "staff.manage", "qualification.manage", "settings.manage", "report.view"]
 
 [roles.trainer]
 description = "Trainer"
