@@ -16,6 +16,8 @@ import (
 	"sort"
 
 	"github.com/google/uuid"
+
+	"github.com/AGlElectronics/learn/backend/internal/authbase"
 )
 
 // Membership records that a user holds one role organization-wide. A user
@@ -42,6 +44,14 @@ type User struct {
 	// OrgPermissions holds the permissions the user has when operating on
 	// resources owned by a specific organization.
 	OrgPermissions map[uuid.UUID]map[string]struct{}
+}
+
+// Key is the person's identity across Con Services: (issuer, subject).
+func (u *User) Key() authbase.UserKey {
+	if u == nil {
+		return authbase.UserKey{}
+	}
+	return authbase.UserKey{Issuer: u.Issuer, Subject: u.Subject}
 }
 
 // HasAny returns true if the user holds `perm` anywhere (any org). Use for

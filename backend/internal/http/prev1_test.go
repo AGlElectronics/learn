@@ -362,29 +362,38 @@ func TestSettingsAndRetention(t *testing.T) {
 	code, s := call(t, h, admin, "GET", "/api/v1/settings", nil)
 	mustStatus(t, code, 200, "settings")
 	ret := obj(s["retention"])
-	if str(ret, "source") != "default" || ret["pending_legal_review"] != true || num(ret, "inactive_user_months") != 36 {
+	if str(ret, "source") != "default" || ret["pending_legal_review"] != true || num(ret, "inactive_users_days") != 1095 ||
+		num(ret, "audit_log_days") != 730 || ret["editable"] != true || len(arr(ret, "managed_in_den")) != 0 {
 		t.Fatalf("default retention = %v", ret)
 	}
-	if obj(s["telegram"])["configured"] != false {
+	if obj(s["telegram"])["configured"] != false || obj(s["telegram"])["managed_in_den"] != false {
 		t.Fatalf("telegram = %v", s["telegram"])
+	}
+	if str(obj(s["mail"]), "source") != "none" {
+		t.Fatalf("mail = %v", s["mail"])
 	}
 	code, _ = call(t, h, trainerA, "GET", "/api/v1/settings", nil)
 	mustStatus(t, code, 403, "a trainer opens settings")
-	code, _ = call(t, h, admin, "PUT", "/api/v1/settings", map[string]any{"retention": map[string]any{"inactive_user_months": -1, "audit_log_months": 1}})
+	code, _ = call(t, h, admin, "PUT", "/api/v1/settings", map[string]any{"retention": map[string]any{"inactive_users_days": -1, "audit_log_days": 1}})
 	mustStatus(t, code, 422, "negative retention")
 	code, s = call(t, h, admin, "PUT", "/api/v1/settings", map[string]any{
-		"telegram_enabled": false, "retention": map[string]any{"inactive_user_months": 12, "audit_log_months": 6}})
+		"telegram_enabled": false, "retention": map[string]any{"inactive_users_days": 365, "audit_log_days": 180}})
 	mustStatus(t, code, 200, "save settings")
-	if ret := obj(s["retention"]); str(ret, "source") != "learn" || num(ret, "inactive_user_months") != 12 {
+	if ret := obj(s["retention"]); str(ret, "source") != "learn" || num(ret, "inactive_users_days") != 365 {
 		t.Fatalf("saved retention = %v", ret)
 	}
 	if obj(s["telegram"])["enabled"] != false {
 		t.Fatalf("telegram switch = %v", s["telegram"])
 	}
+	code, s = call(t, h, admin, "PUT", "/api/v1/settings", map[string]any{"retention": map[string]any{"audit_log_days": 181}})
+	mustStatus(t, code, 200, "change one key")
+	if ret := obj(s["retention"]); num(ret, "inactive_users_days") != 365 || num(ret, "audit_log_days") != 181 {
+		t.Fatalf("a partial change keeps the other key: %v", ret)
+	}
 
 	exec(t, pool, `UPDATE users SET last_login_at = now() - interval '13 months' WHERE id = $1`, ids[learner.user])
 	exec(t, pool, `INSERT INTO audit_log (action, at) VALUES ('old.entry', now() - interval '7 months')`)
-	res, err := learn.NewService(pool).ApplyRetention(context.Background(), audit.New(pool, zerolog.Nop()), nil, time.Now())
+	res, err := learn.NewService(pool).ApplyRetention(context.Background(), audit.New(pool, zerolog.Nop()), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,30 +409,68 @@ func TestSettingsAndRetention(t *testing.T) {
 	}
 }
 
+// pairedDen stores a Den link whose bundle carries moduleSettings and
+// returns the restored client.
+func pairedDen(t *testing.T, d *httpx.Deps, moduleSettings string) *denlink.Client {
+	t.Helper()
+	bundle := `{"brand":{"organization_name":"Con"},"module_settings":` + moduleSettings + `}`
+	if _, err := d.Pool.Exec(context.Background(), `
+		INSERT INTO den_link (den_base_url, credential, bundle) VALUES ('https://den.test', 'cred', $1)`, bundle); err != nil {
+		t.Fatal(err)
+	}
+	den := denlink.New(d.Pool, denlink.Config{Slug: "learn", AppEnv: "development"}, zerolog.Nop())
+	if err := den.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return den
+}
+
 func TestRetentionFromDen(t *testing.T) {
-	h, _ := setupRouterWith(t, func(d *httpx.Deps) {
-		bundle := `{"brand":{"organization_name":"Con"},"settings":{"data":{"retention":{"inactive_user_months":18,"audit_log_months":3}}}}`
-		if _, err := d.Pool.Exec(context.Background(), `
-			INSERT INTO den_link (den_base_url, credential, bundle) VALUES ('https://den.test', 'cred', $1)`, bundle); err != nil {
-			t.Fatal(err)
-		}
-		den := denlink.New(d.Pool, denlink.Config{Slug: "learn"}, zerolog.Nop())
-		if err := den.Restore(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+	var den *denlink.Client
+	h, pool := setupRouterWith(t, func(d *httpx.Deps) {
+		den = pairedDen(t, d, `{"data":{"retention":{"inactive_users_days":540,"offboarded_volunteers_days":30},"learn":{"audit_log_days":90}}}`)
 		d.Den = den
 	})
 	signIn(t, h, admin)
 	code, s := call(t, h, admin, "GET", "/api/v1/settings", nil)
 	mustStatus(t, code, 200, "settings")
 	ret := obj(s["retention"])
-	if str(ret, "source") != "den" || ret["editable"] != false || num(ret, "inactive_user_months") != 18 || num(ret, "audit_log_months") != 3 {
+	if str(ret, "source") != "den" || ret["editable"] != false || num(ret, "inactive_users_days") != 540 || num(ret, "audit_log_days") != 90 ||
+		len(arr(ret, "managed_in_den")) != 2 {
 		t.Fatalf("retention from Den = %v", ret)
 	}
-	code, _ = call(t, h, admin, "PUT", "/api/v1/settings", map[string]any{"retention": map[string]any{"inactive_user_months": 1, "audit_log_months": 1}})
-	mustStatus(t, code, 409, "change retention while Den decides")
+	code, _ = call(t, h, admin, "PUT", "/api/v1/settings", map[string]any{"retention": map[string]any{"inactive_users_days": 1}})
+	mustStatus(t, code, 409, "change a retention key Den decides")
 	code, _ = call(t, h, admin, "PUT", "/api/v1/settings", map[string]any{"telegram_enabled": false})
-	mustStatus(t, code, 200, "the Telegram switch stays Learn's")
+	mustStatus(t, code, 200, "the Telegram switch stays Learn's while Den does not set it")
+
+	svc := learn.NewService(pool)
+	svc.SetModuleSettings(den.ModuleSettings)
+	r, source, err := svc.EffectiveRetention(context.Background())
+	if err != nil || source != learn.RetentionFromDen || r.InactiveUsersDays != 540 || r.AuditLogDays != 90 {
+		t.Fatalf("effective retention = %+v %s %v", r, source, err)
+	}
+}
+
+func TestPartialDenSettings(t *testing.T) {
+	h, _ := setupRouterWith(t, func(d *httpx.Deps) {
+		d.Den = pairedDen(t, d, `{"data":{"learn":{"audit_log_days":"soon","telegram_enabled":false}}}`)
+	})
+	signIn(t, h, admin)
+	code, s := call(t, h, admin, "GET", "/api/v1/settings", nil)
+	mustStatus(t, code, 200, "settings")
+	ret := obj(s["retention"])
+	if str(ret, "source") != "default" || ret["editable"] != true || num(ret, "audit_log_days") != 730 {
+		t.Fatalf("an invalid Den value counts as not set: %v", ret)
+	}
+	tg := obj(s["telegram"])
+	if tg["enabled"] != false || tg["managed_in_den"] != true {
+		t.Fatalf("telegram from Den = %v", tg)
+	}
+	code, _ = call(t, h, admin, "PUT", "/api/v1/settings", map[string]any{"telegram_enabled": true})
+	mustStatus(t, code, 409, "the Telegram switch while Den decides")
+	code, _ = call(t, h, admin, "PUT", "/api/v1/settings", map[string]any{"retention": map[string]any{"audit_log_days": 30}})
+	mustStatus(t, code, 200, "retention keys Den does not set stay Learn's")
 }
 
 // countLimiter allows the first n requests per key.
@@ -433,11 +480,14 @@ type countLimiter struct {
 	seen map[string]int
 }
 
-func (l *countLimiter) Allow(key string) bool {
+func (l *countLimiter) Allow(key string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.seen[key]++
-	return l.seen[key] <= l.n
+	if l.seen[key] <= l.n {
+		return true, 0
+	}
+	return false, 30 * time.Second
 }
 
 func TestRateLimitHooks(t *testing.T) {
@@ -452,6 +502,13 @@ func TestRateLimitHooks(t *testing.T) {
 	mustStatus(t, code, 429, "second search in the window")
 	if errCode(out) != "rate_limited" {
 		t.Fatalf("error = %v", out)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/users?q=c", nil)
+	req.Header.Set("X-Dev-User", trainerA.user)
+	h.ServeHTTP(rec, req)
+	if rec.Code != 429 || rec.Header().Get("Retry-After") != "30" {
+		t.Fatalf("Retry-After = %q (%d), want the limiter's wait", rec.Header().Get("Retry-After"), rec.Code)
 	}
 	code, _ = call(t, h, admin, "GET", "/api/v1/users?q=a", nil)
 	mustStatus(t, code, 200, "limits are per person")

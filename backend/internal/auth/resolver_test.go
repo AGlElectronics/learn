@@ -21,6 +21,7 @@ import (
 	"github.com/AGlElectronics/learn/backend/internal/config"
 	"github.com/AGlElectronics/learn/backend/internal/db"
 	"github.com/AGlElectronics/learn/backend/internal/domain"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 	"github.com/AGlElectronics/learn/backend/migrations"
 )
 
@@ -76,7 +77,7 @@ func testResolver(t *testing.T) (*Resolver, *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewResolver(pool, access), pool
+	return NewResolver(pool, access, groupmatch.Config{}), pool
 }
 
 func TestResolverOIDC(t *testing.T) {
@@ -157,7 +158,7 @@ func TestResolverAdoptsSyncedUser(t *testing.T) {
 
 func TestDevMiddlewareProvisions(t *testing.T) {
 	r, _ := testResolver(t)
-	cfg := &config.Config{AuthMode: config.AuthModeDev, DevDefaultUser: "dev-admin", DevDefaultGroups: []string{"learn-admin"}}
+	cfg := &config.Config{AppEnv: "development", AuthMode: config.AuthModeDev, DevDefaultUser: "dev-admin", DevDefaultGroups: []string{"learn-admin"}}
 	var got *User
 	h := Middleware(cfg, r, nil)(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
 		got, _ = FromContext(req.Context())

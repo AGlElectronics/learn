@@ -6,6 +6,7 @@ package mail
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"mime"
@@ -36,6 +37,10 @@ type SMTPConfig struct {
 	Password string
 	From     string
 	FromName string
+	// Security is "starttls" (STARTTLS required), "tls" (TLS from the
+	// first byte), "none", or "" (STARTTLS when the server offers it, the
+	// behaviour of the SMTP_* settings).
+	Security string
 }
 
 // SMTP sends through a plain or STARTTLS SMTP server (Mailpit in dev).
@@ -65,7 +70,13 @@ func (s *SMTP) Send(ctx context.Context, m Message) error {
 	}
 	addr := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
 	d := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	var conn net.Conn
+	var err error
+	if s.cfg.Security == "tls" {
+		conn, err = (&tls.Dialer{NetDialer: &d, Config: &tls.Config{ServerName: s.cfg.Host}}).DialContext(ctx, "tcp", addr)
+	} else {
+		conn, err = d.DialContext(ctx, "tcp", addr)
+	}
 	if err != nil {
 		return fmt.Errorf("smtp dial %s: %w", addr, err)
 	}
@@ -75,10 +86,14 @@ func (s *SMTP) Send(ctx context.Context, m Message) error {
 		return fmt.Errorf("smtp hello: %w", err)
 	}
 	defer c.Close()
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		if err := c.StartTLS(nil); err != nil {
+	switch ok, _ := c.Extension("STARTTLS"); {
+	case s.cfg.Security == "tls" || s.cfg.Security == "none":
+	case ok:
+		if err := c.StartTLS(&tls.Config{ServerName: s.cfg.Host}); err != nil {
 			return fmt.Errorf("smtp starttls: %w", err)
 		}
+	case s.cfg.Security == "starttls":
+		return fmt.Errorf("smtp %s does not offer STARTTLS (security is starttls)", addr)
 	}
 	if s.cfg.Username != "" {
 		if err := c.Auth(smtp.PlainAuth("", s.cfg.Username, s.cfg.Password, s.cfg.Host)); err != nil {

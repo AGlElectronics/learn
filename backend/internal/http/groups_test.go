@@ -150,7 +150,7 @@ func setupGroupRouterWith(t *testing.T, realm *fakeRealm, tweak func(*config.Con
 	}
 
 	cfg := &config.Config{
-		AppEnv:         "test",
+		AppEnv:         "development",
 		HTTPAddr:       ":0",
 		DatabaseURL:    dsn,
 		AuthMode:       config.AuthModeDev,

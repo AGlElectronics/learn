@@ -9,7 +9,7 @@
 //	GET /readyz            — service readiness (unauthenticated)
 //	GET /api/health        — richer status for humans
 //	GET /api/den/state     — Den mode and pairing (unauthenticated; also /api/v1/den/state)
-//	GET /api/role-catalog  — public role catalog for HR's access picker
+//	GET /api/role-catalog  — role catalog for HR's access picker (HR_SERVICE_TOKEN or staff sign-in; ETag)
 //	GET /api/v1/brand      — active brand package (unauthenticated)
 //	GET /api/v1/me         — authenticated principal + permissions
 //	GET|PUT /api/v1/me/preferences — theme (via Den) and language (Learn)
@@ -48,8 +48,10 @@
 //	GET /api/v1/users?q=   — people picker for enrolment (staff only)
 //	/api/v1/den…           — Den pairing admin (settings.manage)
 //
-// Everything under /api/v1 (except /brand) requires authentication; the
-// auth middleware is applied inside a chi.Group so the shape is explicit.
+// Everything under /api/v1 (except /brand) requires an access token for
+// the learn-api audience (OIDC_AUDIENCE); ID tokens are refused. The auth
+// middleware is applied inside a chi.Group so the shape is explicit. JSON
+// bodies are capped at 1 MiB (413 request_too_large).
 // With DEN_MODE=required, the /api routes other than health, role catalog,
 // brand, me and den answer 503 den_pairing_required until Den pairs.
 package http
@@ -60,20 +62,20 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
 
 	"github.com/AGlElectronics/learn/backend/internal/audit"
 	"github.com/AGlElectronics/learn/backend/internal/auth"
+	"github.com/AGlElectronics/learn/backend/internal/authbase"
 	"github.com/AGlElectronics/learn/backend/internal/brand"
-	"github.com/AGlElectronics/learn/backend/internal/clientip"
 	"github.com/AGlElectronics/learn/backend/internal/config"
 	"github.com/AGlElectronics/learn/backend/internal/denlink"
 	"github.com/AGlElectronics/learn/backend/internal/domain"
 	"github.com/AGlElectronics/learn/backend/internal/keycloakadmin"
 	"github.com/AGlElectronics/learn/backend/internal/learn"
+	"github.com/AGlElectronics/learn/backend/internal/mail"
 	"github.com/AGlElectronics/learn/backend/internal/notify"
 )
 
@@ -99,6 +101,11 @@ type Deps struct {
 	// Limiters overrides the rate limiter of a route group; the rest use
 	// the defaults (see ratelimit.go).
 	Limiters map[LimitName]Limiter
+	// Service is the learn service the workers use (group matching and
+	// Den's module settings set); nil = a new one.
+	Service *learn.Service
+	// Mail is the mail server switch, for the settings page; nil = no email.
+	Mail *mail.Switch
 }
 
 // NewRouter builds the chi router with middleware, CORS, and routes.
@@ -106,8 +113,11 @@ type Deps struct {
 func NewRouter(deps Deps, version string) http.Handler {
 	r := chi.NewRouter()
 
+	authCfg := deps.Config.Auth()
 	r.Use(chimiddleware.RequestID)
-	r.Use(clientip.Middleware(deps.Config.TrustedProxyCIDRs))
+	r.Use(authCfg.TrustedProxies.Middleware)
+	r.Use(authCfg.StripDevHeaders)
+	r.Use(authbase.SecurityHeaders)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.Timeout(60 * time.Second))
 
@@ -123,26 +133,30 @@ func NewRouter(deps Deps, version string) http.Handler {
 	}))
 	r.Use(hlog.RequestIDHandler("request_id", "X-Request-ID"))
 
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   deps.Config.CORSAllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Accept-Language", "Authorization", "Content-Type", "X-Dev-User", "X-Dev-Groups", "X-Request-ID"},
-		ExposedHeaders:   []string{"X-Request-ID"},
-		AllowCredentials: true,
-		MaxAge:           300,
+	// The dev headers (X-Dev-User, X-Dev-Groups) pass CORS only in
+	// development with AUTH_MODE=dev; X-Request-ID is exposed.
+	r.Use(authCfg.CORS(authbase.CORSOptions{
+		AllowedOrigins: deps.Config.CORSAllowedOrigins,
+		ExtraHeaders:   []string{"Accept-Language"},
 	}))
 
 	health := newHealthHandler(deps.Pool, version)
-	resolver := auth.NewResolver(deps.Pool, deps.Access)
+	resolver := auth.NewResolver(deps.Pool, deps.Access, deps.Config.GroupMatch)
 	authMW := auth.Middleware(deps.Config, resolver, deps.OIDCVerifier)
 
 	den := deps.Den
 	if den == nil {
-		den = denlink.New(deps.Pool, denlink.Config{Slug: "learn", Version: version, Mode: deps.Config.DenMode}, deps.Logger)
+		den = denlink.New(deps.Pool, deps.Config.DenConfig(version), deps.Logger)
 	}
 	brandH := &brandHandler{provider: deps.Brand, den: den}
 	audits := audit.New(deps.Pool, deps.Logger)
-	courses := &courseHandler{svc: learn.NewService(deps.Pool), audit: audits}
+	svc := deps.Service
+	if svc == nil {
+		svc = learn.NewService(deps.Pool)
+		svc.SetGroupMatch(deps.Config.GroupMatch)
+		svc.SetModuleSettings(den.ModuleSettings)
+	}
+	courses := &courseHandler{svc: svc, audit: audits}
 	courses.svc.SetFeedbackPepper(deps.Config.FeedbackPepper)
 	resolver.SetGroupsHook(courses.svc.ApplyLoginGroups)
 	groupSync := learn.NewGroupSync(courses.svc, deps.Keycloak, learn.GroupSyncIssuer(deps.Config), deps.Logger)
@@ -159,11 +173,12 @@ func NewRouter(deps Deps, version string) http.Handler {
 	r.Route("/api", func(api chi.Router) {
 		api.Use(den.RequirePaired)
 		api.Get("/health", health.get)
-		api.Get("/role-catalog", roleCatalogHandler(deps.Access))
+		api.With(roleCatalogAuth(deps.Config.HRServiceToken, authMW)).
+			Get("/role-catalog", roleCatalogHandler(deps.Access))
 		api.Get("/den/state", den.StateHandler)
 		api.Get("/qualification-catalog", qualificationCatalogHandler(courses.svc))
 		api.Get("/internal/holdings", holdingsHandler(deps.Config, courses.svc))
-		api.With(newRateLimiter(30, time.Minute).middleware).Get("/public/verify/{code}", verifyHandler(courses.svc))
+		api.With(verifyLimiter().Middleware).Get("/public/verify/{code}", verifyHandler(courses.svc))
 		api.With(auth.PortalMiddleware(deps.Config, resolver, deps.PortalVerifier, deps.OIDCVerifier)).
 			Get("/portal/todos", portalTodosHandler(courses.svc, portalBaseURL(deps.Config)))
 
@@ -236,7 +251,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 				mountTranslationRoutes(secure, courses)
 				mountChannelRoutes(secure, courses.svc, deps.Notifier)
 				mountSettingsRoutes(secure, &settingsHandler{
-					svc: courses.svc, audit: audits, den: DenSettingsFunc(den), cfg: deps.Config, directory: groupSync != nil,
+					svc: courses.svc, audit: audits, cfg: deps.Config, mail: deps.Mail, directory: groupSync != nil,
 				})
 				secure.With(requirePermission(domain.PermSettingsManage)).Post("/reminders/run", runRemindersHandler(reminders))
 			})

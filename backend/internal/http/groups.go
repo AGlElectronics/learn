@@ -12,6 +12,7 @@ import (
 	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/config"
 	"github.com/AGlElectronics/learn/backend/internal/domain"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 	"github.com/AGlElectronics/learn/backend/internal/learn"
 )
@@ -22,6 +23,9 @@ import (
 type groupPolicy struct {
 	linkable  []string
 	directory config.GroupDirectoryMode
+	// groups is the matching rule; OIDC_GROUP_PREFIX is stripped before
+	// LEARN_LINKABLE_GROUPS is compared.
+	groups groupmatch.Config
 }
 
 func newGroupPolicy(cfg *config.Config) groupPolicy {
@@ -29,14 +33,19 @@ func newGroupPolicy(cfg *config.Config) groupPolicy {
 	if mode == "" {
 		mode = config.GroupDirectoryKeycloak
 	}
-	return groupPolicy{linkable: cfg.LinkableGroups, directory: mode}
+	return groupPolicy{linkable: cfg.LinkableGroups, directory: mode, groups: cfg.GroupMatch}
+}
+
+// linkable reports whether LEARN_LINKABLE_GROUPS allows the group at path.
+func (p groupPolicy) linkableGroup(path string) bool {
+	return learn.GroupLinkable(p.groups, path, p.linkable)
 }
 
 // mayLink reports whether the caller may link the group at path in an
 // organization: course.manage links any group, everyone else only the
 // groups LEARN_LINKABLE_GROUPS allows.
 func (p groupPolicy) mayLink(u *auth.User, orgID uuid.UUID, path string) bool {
-	return u.HasInOrg(domain.PermCourseManage, orgID) || learn.GroupLinkable(path, p.linkable)
+	return u.HasInOrg(domain.PermCourseManage, orgID) || p.linkableGroup(path)
 }
 
 // groupHandler owns Keycloak-group enrolment: the group picker and the
@@ -88,7 +97,7 @@ func (h *groupHandler) listGroups(w http.ResponseWriter, r *http.Request) {
 	all := u.HasAny(domain.PermCourseManage)
 	out := make([]map[string]string, 0, len(groups))
 	for _, g := range groups {
-		if !all && !learn.GroupLinkable(g.Path, h.policy.linkable) {
+		if !all && !h.policy.linkableGroup(g.Path) {
 			continue
 		}
 		out = append(out, map[string]string{"id": g.ID, "name": g.Name, "path": g.Path})

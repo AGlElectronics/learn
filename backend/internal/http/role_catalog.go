@@ -1,23 +1,34 @@
 package http
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
 
 	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/domain"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 )
 
+// roleCatalogEntry is one role in GET /api/role-catalog
+// (docs/concepts/role-catalog.md).
 type roleCatalogEntry struct {
-	Key         string   `json:"key"`
-	Label       string   `json:"label"`
-	Description string   `json:"description"`
-	Group       string   `json:"group"`
-	Assignable  bool     `json:"assignable"`
-	Scope       string   `json:"scope"`
-	Permissions []string `json:"permissions"`
-	Note        string   `json:"note,omitempty"`
+	Key          string   `json:"key"`
+	Label        string   `json:"label"`
+	Description  string   `json:"description"`
+	Group        string   `json:"group"`
+	GroupDisplay string   `json:"group_display"`
+	Assignable   bool     `json:"assignable"`
+	Default      bool     `json:"default"`
+	Scope        string   `json:"scope"`
+	Privileged   bool     `json:"privileged"`
+	Dynamic      bool     `json:"dynamic"`
+	Permissions  []string `json:"permissions"`
+	Note         string   `json:"note,omitempty"`
 }
 
 var learnRoleDescriptions = map[string]string{
@@ -27,9 +38,40 @@ var learnRoleDescriptions = map[string]string{
 	domain.RoleCoordinator:       "Training office: sees the reports and manages qualifications and certificates.",
 }
 
-// roleCatalogHandler serves GET /api/role-catalog (public, read-only). Roles
-// bound to an IdP group in the access config are assignable from HR; course
-// learners are enrolments inside Learn, not a role.
+// privilegedPermissions make a role admin-type: they change the module's
+// settings, reach other people's results or grant access.
+var privilegedPermissions = map[string]bool{
+	domain.PermSettingsManage:      true,
+	domain.PermCourseManage:        true,
+	domain.PermStaffManage:         true,
+	domain.PermQualificationManage: true,
+	domain.PermReportView:          true,
+}
+
+// roleCatalogAuth admits HR's backend with HR_SERVICE_TOKEN (constant-time
+// compare) and otherwise requires a normal sign-in through authMW. Without
+// a configured token only signed-in staff can read the catalog.
+func roleCatalogAuth(hrToken string, authMW func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		signedIn := authMW(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if hrToken != "" {
+				got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+				if subtle.ConstantTimeCompare([]byte(got), []byte(hrToken)) == 1 {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			signedIn.ServeHTTP(w, r)
+		})
+	}
+}
+
+// roleCatalogHandler serves GET /api/role-catalog. Roles bound to an IdP
+// group in the access config are assignable from HR; the group is the
+// stored (normalised) form, group_display the one in the file. Course
+// learners are enrolments inside Learn, not a role; a role without a group
+// binding is listed with scope "course" (assigned per course in Learn).
 func roleCatalogHandler(access *auth.AccessConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		roles := make([]roleCatalogEntry, 0)
@@ -37,8 +79,10 @@ func roleCatalogHandler(access *auth.AccessConfig) http.HandlerFunc {
 		for _, role := range access.Roles() {
 			set := access.PermissionsForRole(role)
 			perms := make([]string, 0, len(set))
+			privileged := false
 			for p := range set {
 				perms = append(perms, p)
+				privileged = privileged || privilegedPermissions[p]
 			}
 			sort.Strings(perms)
 			desc := access.RoleDescription(role)
@@ -49,6 +93,7 @@ func roleCatalogHandler(access *auth.AccessConfig) http.HandlerFunc {
 				Key:         role,
 				Label:       humanizeRole(role),
 				Description: desc,
+				Privileged:  privileged,
 				Permissions: perms,
 			}
 			bound := false
@@ -57,10 +102,11 @@ func roleCatalogHandler(access *auth.AccessConfig) http.HandlerFunc {
 					continue
 				}
 				bound = true
+				g := groupmatch.NewGrant(b.Group)
 				entry := base
-				entry.Group = b.Group
+				entry.Group, entry.GroupDisplay = g.Stored, g.Display
 				entry.Assignable = true
-				entry.Scope = "organization:" + b.Organization
+				entry.Scope = "organization"
 				roles = append(roles, entry)
 			}
 			if !bound {
@@ -70,10 +116,21 @@ func roleCatalogHandler(access *auth.AccessConfig) http.HandlerFunc {
 				roles = append(roles, entry)
 			}
 		}
+		raw, _ := json.Marshal(roles)
+		sum := sha256.Sum256(raw)
+		revision := hex.EncodeToString(sum[:8])
+		etag := `"` + revision + `"`
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Cache-Control", "no-cache")
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"module":       "learn",
 			"display_name": "Learn",
 			"description":  "Courses, enrolments and training progress.",
+			"revision":     revision,
 			"roles":        roles,
 		})
 	}

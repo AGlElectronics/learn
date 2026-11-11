@@ -34,6 +34,10 @@ const (
 	CodeArchived Code = "archived"
 	// CodeRateLimited (429): too many requests; retry after Retry-After.
 	CodeRateLimited Code = "rate_limited"
+	// CodeTooLarge (413) and CodeUnsupportedMedia (415) match
+	// authbase.DecodeJSON.
+	CodeTooLarge         Code = "request_too_large"
+	CodeUnsupportedMedia Code = "unsupported_media_type"
 )
 
 // Error is the canonical service error. Services return *Error or wrap one
@@ -153,6 +157,10 @@ func statusFor(code Code) int {
 		return http.StatusConflict
 	case CodeRateLimited:
 		return http.StatusTooManyRequests
+	case CodeTooLarge:
+		return http.StatusRequestEntityTooLarge
+	case CodeUnsupportedMedia:
+		return http.StatusUnsupportedMediaType
 	default:
 		return http.StatusInternalServerError
 	}

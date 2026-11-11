@@ -98,14 +98,14 @@ const retentionBatch = 500
 // ApplyRetention anonymises people inactive longer than the retention
 // (no sign-in and no group sync in that time) and deletes audit entries
 // older than the audit retention. now is injectable for tests.
-func (s *Service) ApplyRetention(ctx context.Context, log *audit.Log, den DenSettings, now time.Time) (RetentionResult, error) {
-	r, source, err := s.EffectiveRetention(ctx, den)
+func (s *Service) ApplyRetention(ctx context.Context, log *audit.Log, now time.Time) (RetentionResult, error) {
+	r, source, err := s.EffectiveRetention(ctx)
 	res := RetentionResult{Source: source}
 	if err != nil {
 		return res, err
 	}
-	if r.InactiveUserMonths > 0 {
-		cutoff := now.AddDate(0, -r.InactiveUserMonths, 0)
+	if r.InactiveUsersDays > 0 {
+		cutoff := now.AddDate(0, 0, -r.InactiveUsersDays)
 		rows, err := s.pool.Query(ctx, `
 			SELECT u.id FROM users u
 			 WHERE u.erased_at IS NULL
@@ -127,8 +127,8 @@ func (s *Service) ApplyRetention(ctx context.Context, log *audit.Log, den DenSet
 			res.Anonymised++
 		}
 	}
-	if r.AuditLogMonths > 0 && log != nil {
-		n, err := log.Purge(ctx, now.AddDate(0, -r.AuditLogMonths, 0))
+	if r.AuditLogDays > 0 && log != nil {
+		n, err := log.Purge(ctx, now.AddDate(0, 0, -r.AuditLogDays))
 		if err != nil {
 			return res, err
 		}
@@ -137,14 +137,14 @@ func (s *Service) ApplyRetention(ctx context.Context, log *audit.Log, den DenSet
 	if res.Anonymised > 0 || res.AuditDeleted > 0 {
 		log.Record(ctx, audit.System, audit.Entry{Action: audit.UsersAnonymised, TargetType: "retention",
 			Details: map[string]any{"anonymised": res.Anonymised, "audit_deleted": res.AuditDeleted, "source": source,
-				"inactive_user_months": r.InactiveUserMonths, "audit_log_months": r.AuditLogMonths}})
+				"inactive_users_days": r.InactiveUsersDays, "audit_log_days": r.AuditLogDays}})
 	}
 	return res, nil
 }
 
 // RunRetention applies retention shortly after start and every six hours
 // until ctx ends, on one replica at a time.
-func (s *Service) RunRetention(ctx context.Context, log *audit.Log, den DenSettings, logger zerolog.Logger) {
+func (s *Service) RunRetention(ctx context.Context, log *audit.Log, logger zerolog.Logger) {
 	l := logger.With().Str("component", "retention").Logger()
 	t := time.NewTimer(5 * time.Minute)
 	defer t.Stop()
@@ -156,7 +156,7 @@ func (s *Service) RunRetention(ctx context.Context, log *audit.Log, den DenSetti
 			var res RetentionResult
 			_, err := withJobLock(ctx, s.pool, "learn-retention", func() (int, error) {
 				var err error
-				res, err = s.ApplyRetention(ctx, log, den, time.Now())
+				res, err = s.ApplyRetention(ctx, log, time.Now())
 				return res.Anonymised, err
 			})
 			switch {

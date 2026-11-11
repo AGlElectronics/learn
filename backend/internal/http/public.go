@@ -5,13 +5,11 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/AGlElectronics/learn/backend/internal/authbase"
 	"github.com/AGlElectronics/learn/backend/internal/brand"
-	"github.com/AGlElectronics/learn/backend/internal/clientip"
 	"github.com/AGlElectronics/learn/backend/internal/config"
 	"github.com/AGlElectronics/learn/backend/internal/denlink"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
@@ -22,46 +20,10 @@ import (
 // Public certificate verification
 // ----------------------------------------------------------------------------
 
-// rateLimiter allows `limit` requests per client IP per window. Counters
-// live in memory per replica, which is enough to slow down code guessing.
-type rateLimiter struct {
-	limit  int
-	window time.Duration
-
-	mu      sync.Mutex
-	started time.Time
-	counts  map[string]int
-}
-
-func newRateLimiter(limit int, window time.Duration) *rateLimiter {
-	return &rateLimiter{limit: limit, window: window, counts: map[string]int{}}
-}
-
-func (l *rateLimiter) allow(key string, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if now.Sub(l.started) >= l.window {
-		l.started = now
-		clear(l.counts)
-	}
-	l.counts[key]++
-	return l.counts[key] <= l.limit
-}
-
-// Allow implements Limiter.
-func (l *rateLimiter) Allow(key string) bool { return l.allow(key, time.Now()) }
-
-func (l *rateLimiter) middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !l.allow(clientip.FromRequest(r), time.Now()) {
-			w.Header().Set("Retry-After", "60")
-			writeJSON(w, http.StatusTooManyRequests, map[string]any{
-				"error": map[string]string{"code": "rate_limited", "message": "too many requests; try again in a minute"},
-			})
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+// verifyLimiter slows down code guessing on the public verify route: 30
+// requests at once, then one every 2 seconds, per client IP (per replica).
+func verifyLimiter() *authbase.RateLimiter {
+	return authbase.NewRateLimiter(authbase.RateLimitOptions{Rate: 0.5, Burst: 30})
 }
 
 // verifyHandler serves GET /api/public/verify/{code} without auth: only

@@ -15,20 +15,17 @@ import (
 	"github.com/AGlElectronics/learn/backend/internal/domain"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 	"github.com/AGlElectronics/learn/backend/internal/learn"
+	"github.com/AGlElectronics/learn/backend/internal/mail"
 )
 
-// DenSettingsFunc exposes Den's module settings for Learn (nil when
-// standalone) to the service layer.
-func DenSettingsFunc(den *denlink.Client) learn.DenSettings {
-	return func() (map[string]any, bool) {
+// ModuleSettingsFunc is where the service layer reads Den's module settings
+// for Learn (nil while standalone).
+func ModuleSettingsFunc(den *denlink.Client) func() *denlink.ModuleSettings {
+	return func() *denlink.ModuleSettings {
 		if den == nil {
-			return nil, false
+			return nil
 		}
-		b := den.Bundle()
-		if b == nil {
-			return nil, false
-		}
-		return b.Settings.Data, true
+		return den.ModuleSettings()
 	}
 }
 
@@ -36,8 +33,9 @@ func DenSettingsFunc(den *denlink.Client) learn.DenSettings {
 type settingsHandler struct {
 	svc   *learn.Service
 	audit *audit.Log
-	den   learn.DenSettings
 	cfg   *config.Config
+	// mail reports which mail server Learn uses (nil: no email at all).
+	mail *mail.Switch
 	// directory reports whether a group directory client is configured.
 	directory bool
 }
@@ -53,16 +51,26 @@ type settingsResponse struct {
 		// Configured: TELEGRAM_BOT_TOKEN is set. Enabled: the switch.
 		Configured bool `json:"configured"`
 		Enabled    bool `json:"enabled"`
+		// ManagedInDen: Den's learn.telegram_enabled decides.
+		ManagedInDen bool `json:"managed_in_den"`
 	} `json:"telegram"`
 	Retention struct {
 		learn.RetentionSettings
-		// Source: den (Den's module settings decide), learn, or default.
+		// Source: den (Den sets at least one key), learn, or default.
 		Source string `json:"source"`
-		// Editable is false while Den decides.
+		// Editable is false while Den sets every retention key.
 		Editable bool `json:"editable"`
+		// ManagedInDen lists the keys Den sets (module settings keys).
+		ManagedInDen []string `json:"managed_in_den"`
 		// PendingLegalReview marks the built-in defaults.
 		PendingLegalReview bool `json:"pending_legal_review"`
 	} `json:"retention"`
+	Mail struct {
+		// Source: den (Den's smtp.* module settings), env (SMTP_*), or none.
+		Source string `json:"source"`
+		// Warning explains why Den's mail server is not used.
+		Warning string `json:"warning,omitempty"`
+	} `json:"mail"`
 	GroupDirectory struct {
 		Mode      config.GroupDirectoryMode `json:"mode"`
 		Available bool                      `json:"available"`
@@ -76,16 +84,27 @@ func (h *settingsHandler) current(r *http.Request) (settingsResponse, error) {
 	if err != nil {
 		return out, err
 	}
+	managed := h.svc.DenManaged()
 	out.Telegram.Configured = strings.TrimSpace(h.cfg.TelegramBotToken) != ""
 	out.Telegram.Enabled = ms.TelegramEnabled
-	ret, source, err := h.svc.EffectiveRetention(r.Context(), h.den)
+	if on, ok := h.svc.DenTelegramEnabled(); ok {
+		out.Telegram.Enabled, out.Telegram.ManagedInDen = on, true
+	}
+	ret, source, err := h.svc.EffectiveRetention(r.Context())
 	if err != nil {
 		return out, err
 	}
 	out.Retention.RetentionSettings = ret
 	out.Retention.Source = source
-	out.Retention.Editable = source != learn.RetentionFromDen
+	out.Retention.ManagedInDen = []string{}
+	for _, key := range []string{learn.DenKeyInactiveUsersDays, learn.DenKeyAuditLogDays} {
+		if managed[key] {
+			out.Retention.ManagedInDen = append(out.Retention.ManagedInDen, key)
+		}
+	}
+	out.Retention.Editable = len(out.Retention.ManagedInDen) < 2
 	out.Retention.PendingLegalReview = source == learn.RetentionFromDefault
+	out.Mail.Source, out.Mail.Warning = h.mail.Source()
 	out.GroupDirectory.Mode = newGroupPolicy(h.cfg).directory
 	out.GroupDirectory.Available = h.directory
 	out.GroupDirectory.Linkable = h.cfg.LinkableGroups
@@ -104,8 +123,8 @@ func (h *settingsHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// put changes telegram_enabled and/or retention. Retention can't be changed
-// here while Den's module settings decide it (409).
+// put changes telegram_enabled and/or retention keys. A key Den's module
+// settings decide can't be changed here (409).
 func (h *settingsHandler) put(w http.ResponseWriter, r *http.Request) {
 	u, err := auth.MustFromContext(r.Context())
 	if err != nil {
@@ -113,8 +132,8 @@ func (h *settingsHandler) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		TelegramEnabled *bool                    `json:"telegram_enabled"`
-		Retention       *learn.RetentionSettings `json:"retention"`
+		TelegramEnabled *bool                 `json:"telegram_enabled"`
+		Retention       *learn.RetentionPatch `json:"retention"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		httperror.Render(w, r, err)
@@ -123,12 +142,6 @@ func (h *settingsHandler) put(w http.ResponseWriter, r *http.Request) {
 	if in.TelegramEnabled == nil && in.Retention == nil {
 		httperror.Render(w, r, httperror.Validation("nothing to change (give telegram_enabled or retention)", nil))
 		return
-	}
-	if in.Retention != nil {
-		if _, source, err := h.svc.EffectiveRetention(r.Context(), h.den); err == nil && source == learn.RetentionFromDen {
-			httperror.Render(w, r, httperror.Conflict("retention is set in Den (Admin → Modules → Learn) while Learn is paired"))
-			return
-		}
 	}
 	if err := h.svc.SaveModuleSettings(r.Context(), u.ID, in.TelegramEnabled, in.Retention); err != nil {
 		httperror.Render(w, r, err)

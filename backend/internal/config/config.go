@@ -10,7 +10,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -18,26 +17,31 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/AGlElectronics/learn/backend/internal/clientip"
+	"github.com/AGlElectronics/learn/backend/internal/authbase"
 	"github.com/AGlElectronics/learn/backend/internal/denlink"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 )
 
-// AuthMode selects how incoming requests are authenticated.
+// AuthMode selects how incoming requests are authenticated (authbase).
 //
 //   - AuthModeDev reads an X-Dev-User header (identity) and an X-Dev-Groups
 //     header (simulated IdP groups) and provisions a local user tied to the
-//     "dev" issuer. Only safe for local scaffolding and CI.
-//   - AuthModeOIDC verifies a Bearer JWT via the configured issuer.
-type AuthMode string
+//     "dev" issuer. Only allowed with APP_ENV=development.
+//   - AuthModeOIDC verifies a Bearer access token via the configured issuer.
+type AuthMode = authbase.AuthMode
 
 const (
-	AuthModeOIDC AuthMode = "oidc"
-	AuthModeDev  AuthMode = "dev"
+	AuthModeOIDC = authbase.AuthOIDC
+	AuthModeDev  = authbase.AuthDev
 )
+
+// DefaultAudience is OIDC_AUDIENCE when unset: the access token audience
+// Keycloak adds for Learn's API (token contract).
+const DefaultAudience = "learn-api"
 
 // Config is the validated process configuration.
 type Config struct {
-	// Core
+	// Core. AppEnv defaults to production; only "development" relaxes rules.
 	AppEnv     string
 	AppBaseURL string
 	HTTPAddr   string
@@ -56,21 +60,24 @@ type Config struct {
 	AccessConfigPath   string
 	DevDefaultUser     string
 	DevDefaultGroups   []string
+	// GroupMatch is OIDC_GROUPS_CLAIM, OIDC_GROUP_MATCH, OIDC_GROUP_PREFIX.
+	GroupMatch groupmatch.Config
+	// HRServiceToken lets HR read GET /api/role-catalog without a sign-in
+	// (HR_SERVICE_TOKEN). Empty: only signed-in staff may read it.
+	HRServiceToken string
 
 	// Brand provider
 	BrandLocalPath string // optional brand.json; Den's brand overlays it once paired
-	// DenInternalURL replaces the host of pasted Den pairing URLs (Docker).
-	DenInternalURL string
-	// DenMode is DEN_MODE: required keeps the API locked until the module
-	// is paired with Den; standalone (the default) does not.
-	DenMode denlink.Mode
+	// Den is the pairing configuration (DEN_MODE, DEN_INTERNAL_URL,
+	// DEN_ALLOWED_HOSTS, DEN_LINK_ENCRYPTION_KEY[_PREVIOUS], APP_ENV).
+	Den denlink.Config
 
 	// HTTP
 	CORSAllowedOrigins []string
-	// TrustedProxyCIDRs lists the proxies whose X-Forwarded-For entries are
+	// TrustedProxies are the proxies whose X-Forwarded-For entries are
 	// believed when working out the client IP (TRUSTED_PROXY_CIDRS).
-	TrustedProxyCIDRs []netip.Prefix
-	ShutdownTimeout   time.Duration
+	TrustedProxies  authbase.TrustedProxies
+	ShutdownTimeout time.Duration
 
 	// PublicBaseURL is the browser-facing origin of the Learn SPA, used to
 	// build links in notifications (e.g. https://learn.conservices.test).
@@ -139,7 +146,31 @@ const (
 const DevFeedbackPepper = "learn-dev-only-feedback-pepper"
 
 // Development reports whether APP_ENV is development.
-func (c *Config) Development() bool { return c.AppEnv == "development" }
+func (c *Config) Development() bool { return c.AppEnv == authbase.Development }
+
+// Auth is the authbase view of AUTH_MODE, APP_ENV and TRUSTED_PROXY_CIDRS.
+func (c *Config) Auth() authbase.Config {
+	return authbase.Config{AppEnv: c.AppEnv, AuthMode: c.AuthMode, TrustedProxies: c.TrustedProxies}
+}
+
+// Audience is the audience access tokens must carry.
+func (c *Config) Audience() string {
+	if c.OIDCAudience != "" {
+		return c.OIDCAudience
+	}
+	return DefaultAudience
+}
+
+// DenConfig is Den with the slug and version filled in, and APP_ENV taken
+// from the process when Den does not set its own.
+func (c *Config) DenConfig(version string) denlink.Config {
+	d := c.Den
+	d.Slug, d.Version = "learn", version
+	if d.AppEnv == "" {
+		d.AppEnv = c.AppEnv
+	}
+	return d
+}
 
 // S3Enabled reports whether object storage is configured.
 func (c *Config) S3Enabled() bool { return strings.TrimSpace(c.S3Endpoint) != "" }
@@ -158,8 +189,22 @@ func (c *Config) KeycloakAdminEnabled() bool {
 func Load() (*Config, error) {
 	_ = godotenv.Load()
 
+	var errs []string
+	auth, err := authbase.FromEnv(os.Getenv)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	groups, err := groupmatch.FromEnv(os.Getenv)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	den, err := denlink.FromEnv("learn", "", os.Getenv)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+
 	cfg := &Config{
-		AppEnv: getEnv("APP_ENV", "development"),
+		AppEnv: auth.AppEnv,
 		// Container-internal defaults: every module in the ecosystem binds
 		// :8080 inside its container. Host-side port mapping (host 8120 ->
 		// container 8080 for Learn) is handled by docker-compose / K8s.
@@ -168,20 +213,22 @@ func Load() (*Config, error) {
 
 		DatabaseURL: getEnv("DATABASE_URL", ""),
 
-		AuthMode:           AuthMode(getEnv("AUTH_MODE", "dev")),
+		AuthMode:           auth.AuthMode,
 		OIDCIssuerURL:      getEnv("OIDC_ISSUER_URL", ""),
 		OIDCClientID:       getEnv("OIDC_CLIENT_ID", ""),
-		OIDCAudience:       getEnv("OIDC_AUDIENCE", ""),
+		OIDCAudience:       getEnv("OIDC_AUDIENCE", DefaultAudience),
 		OIDCExtraAudiences: splitCSV(getEnv("OIDC_EXTRA_AUDIENCES", "")),
 		AccessConfigPath:   getEnv("ACCESS_CONFIG_PATH", ""),
 		DevDefaultUser:     getEnv("DEV_DEFAULT_USER", "dev-admin"),
 		DevDefaultGroups:   splitCSV(getEnv("DEV_DEFAULT_GROUPS", "learn-admin")),
+		GroupMatch:         groups,
+		HRServiceToken:     getEnv("HR_SERVICE_TOKEN", ""),
 
 		BrandLocalPath: getEnv("BRAND_LOCAL_PATH", ""),
-		DenInternalURL: getEnv("DEN_INTERNAL_URL", ""),
-		DenMode:        denlink.Mode(getEnv("DEN_MODE", string(denlink.ModeStandalone))),
+		Den:            den,
 
 		CORSAllowedOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3005")),
+		TrustedProxies:     auth.TrustedProxies,
 		ShutdownTimeout:    getEnvDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 
 		PublicBaseURL: strings.TrimRight(getEnv("PUBLIC_BASE_URL", ""), "/"),
@@ -218,26 +265,15 @@ func Load() (*Config, error) {
 		cfg.FeedbackPepper = DevFeedbackPepper
 	}
 
-	trusted, err := clientip.ParseCIDRs(getEnv("TRUSTED_PROXY_CIDRS", clientip.DefaultTrustedProxies))
-	if err != nil {
-		return nil, fmt.Errorf("invalid config: TRUSTED_PROXY_CIDRS: %w", err)
-	}
-	cfg.TrustedProxyCIDRs = trusted
-
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(errs); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-func (c *Config) validate() error {
-	var errs []string
-
+func (c *Config) validate(errs []string) error {
 	if c.DatabaseURL == "" {
 		errs = append(errs, "DATABASE_URL is required")
-	}
-	if err := c.DenMode.Validate(); err != nil {
-		errs = append(errs, err.Error())
 	}
 
 	switch c.AuthMode {
@@ -250,8 +286,7 @@ func (c *Config) validate() error {
 		}
 	case AuthModeDev:
 		// dev mode: no extra required fields; dev users auto-provision.
-	default:
-		errs = append(errs, fmt.Sprintf("AUTH_MODE must be 'oidc' or 'dev', got %q", c.AuthMode))
+		// authbase.FromEnv already refused it outside development.
 	}
 
 	switch c.GroupDirectory {
@@ -264,6 +299,11 @@ func (c *Config) validate() error {
 		if c.LearnServiceToken != "" {
 			if err := CheckSecret(c.LearnServiceToken); err != nil {
 				errs = append(errs, "LEARN_SERVICE_TOKEN "+err.Error())
+			}
+		}
+		if c.HRServiceToken != "" {
+			if err := CheckSecret(c.HRServiceToken); err != nil {
+				errs = append(errs, "HR_SERVICE_TOKEN "+err.Error())
 			}
 		}
 		switch {

@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 )
 
 // Resolver turns an authenticated external identity (OIDC claims, or a dev
@@ -29,6 +31,7 @@ import (
 type Resolver struct {
 	pool   *pgxpool.Pool
 	access *AccessConfig
+	groups groupmatch.Config
 	orgIDs sync.Map // organization slug -> uuid.UUID
 	// orgsSeen remembers user/organization sets already recorded by this
 	// process, so a signed-in request costs no extra write.
@@ -42,9 +45,9 @@ type Resolver struct {
 }
 
 // NewResolver constructs a Resolver backed by the given pool and access
-// config catalog.
-func NewResolver(pool *pgxpool.Pool, access *AccessConfig) *Resolver {
-	return &Resolver{pool: pool, access: access}
+// config catalog; groups are matched to bindings with gm.
+func NewResolver(pool *pgxpool.Pool, access *AccessConfig, gm groupmatch.Config) *Resolver {
+	return &Resolver{pool: pool, access: access, groups: gm}
 }
 
 // LoadOrProvisionDevUser is used by the dev bypass middleware. The user
@@ -247,7 +250,7 @@ func displayNameFromClaims(c *OIDCClaims) string {
 // Bindings naming an organization slug that does not exist grant nothing.
 func (r *Resolver) groupMemberships(ctx context.Context, groups []string) ([]Membership, error) {
 	var out []Membership
-	for _, b := range r.access.BindingsFor(groups) {
+	for _, b := range r.access.BindingsFor(r.groups, groups) {
 		orgID, ok, err := r.orgIDBySlug(ctx, b.Organization)
 		if err != nil {
 			return nil, err

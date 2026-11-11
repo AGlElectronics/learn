@@ -100,7 +100,7 @@ func setupP8Router(t *testing.T, store learn.ObjectStore) (nethttp.Handler, *pgx
 		t.Fatalf("load access config: %v", err)
 	}
 	cfg := &config.Config{
-		AppEnv: "test", HTTPAddr: ":0", DatabaseURL: dsn,
+		AppEnv: "development", HTTPAddr: ":0", DatabaseURL: dsn,
 		AuthMode: config.AuthModeDev, DevDefaultUser: "dev-admin", PublicBaseURL: "https://learn.test",
 	}
 	return httpx.NewRouter(httpx.Deps{Config: cfg, Pool: pool, Logger: zerolog.Nop(), Access: access, Files: store}, "test"), pool

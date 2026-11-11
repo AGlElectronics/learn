@@ -1,7 +1,11 @@
 package learn
 
 import (
+	"encoding/json"
 	"testing"
+
+	"github.com/AGlElectronics/learn/backend/internal/denlink"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 )
 
 func TestNormalizeGroup(t *testing.T) {
@@ -34,12 +38,27 @@ func TestGroupLinkable(t *testing.T) {
 		"cohort-a":        false,
 		"":                false,
 	} {
-		if got := GroupLinkable(path, patterns); got != want {
+		if got := GroupLinkable(groupmatch.Config{}, path, patterns); got != want {
 			t.Errorf("GroupLinkable(%q) = %v, want %v", path, got, want)
 		}
 	}
-	if !GroupLinkable("/anything", []string{"*"}) || GroupLinkable("/x", nil) {
+	if !GroupLinkable(groupmatch.Config{}, "/anything", []string{"*"}) || GroupLinkable(groupmatch.Config{}, "/x", nil) {
 		t.Fatal("* allows everything, no patterns allow nothing")
+	}
+
+	// OIDC_GROUP_PREFIX is stripped from both sides; last mode still
+	// compares whole paths for linkability.
+	gm := groupmatch.Config{Prefix: "/con2026", Mode: groupmatch.ModeLast}
+	for path, want := range map[string]bool{
+		"/con2026/learn/cohort-a": true,
+		"/learn/cohort-a":         true,
+		"/con2026/teams/red":      true,
+		"/con2026":                false,
+		"/con2026/other/cohort-a": false,
+	} {
+		if got := GroupLinkable(gm, path, patterns); got != want {
+			t.Errorf("prefixed GroupLinkable(%q) = %v, want %v", path, got, want)
+		}
 	}
 }
 
@@ -71,18 +90,33 @@ func TestMagicMatches(t *testing.T) {
 	}
 }
 
-func TestDenRetention(t *testing.T) {
-	if _, ok := DenRetention(map[string]any{}); ok {
-		t.Fatal("no retention from Den")
+func denSettings(t *testing.T, data string) func() *denlink.ModuleSettings {
+	t.Helper()
+	var ms denlink.ModuleSettings
+	if err := json.Unmarshal([]byte(data), &ms); err != nil {
+		t.Fatal(err)
 	}
-	r, ok := DenRetention(map[string]any{"retention": map[string]any{"inactive_user_months": float64(18)}})
-	if !ok || r.InactiveUserMonths != 18 || r.AuditLogMonths != DefaultRetention.AuditLogMonths {
-		t.Fatalf("partial Den retention = %+v %v", r, ok)
+	return func() *denlink.ModuleSettings { return &ms }
+}
+
+func TestDenManaged(t *testing.T) {
+	s := &Service{}
+	if len(s.DenManaged()) != 0 {
+		t.Fatal("standalone: nothing managed in Den")
 	}
-	if _, ok := DenRetention(map[string]any{"retention": map[string]any{"audit_log_months": float64(-3)}}); ok {
-		t.Fatal("invalid Den retention accepted")
+	s.SetModuleSettings(func() *denlink.ModuleSettings { return nil })
+	if len(s.DenManaged()) != 0 {
+		t.Fatal("unpaired: nothing managed in Den")
 	}
-	if (RetentionSettings{InactiveUserMonths: 1201}).Validate() == nil || (RetentionSettings{}).Validate() != nil {
+	s.SetModuleSettings(denSettings(t, `{"data":{"retention":{"inactive_users_days":365},"learn":{"audit_log_days":-3,"telegram_enabled":false}}}`))
+	m := s.DenManaged()
+	if !m[DenKeyInactiveUsersDays] || m[DenKeyAuditLogDays] || !m[DenKeyTelegramEnabled] {
+		t.Fatalf("managed = %v (an invalid value counts as not set)", m)
+	}
+	if on, ok := s.DenTelegramEnabled(); !ok || on {
+		t.Fatalf("Den telegram = %v %v", on, ok)
+	}
+	if (RetentionSettings{InactiveUsersDays: 36501}).Validate() == nil || (RetentionSettings{}).Validate() != nil {
 		t.Fatal("retention bounds")
 	}
 }

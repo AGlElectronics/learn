@@ -1,21 +1,20 @@
 package http
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/AGlElectronics/learn/backend/internal/auth"
-	"github.com/AGlElectronics/learn/backend/internal/clientip"
+	"github.com/AGlElectronics/learn/backend/internal/authbase"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 )
 
-// Limiter decides whether one more request for key is allowed now. The
-// in-memory fixed-window limiter below implements it; the suite-wide
-// limiter will replace it behind the same interface.
-// TODO(shared/ratelimit): swap in the shared limiter.
+// Limiter decides whether one more request for key is allowed now, and
+// how long to wait when not. *authbase.RateLimiter implements it.
 type Limiter interface {
-	Allow(key string) bool
+	Allow(key string) (bool, time.Duration)
 }
 
 // LimitName names one rate-limited route group (Deps.Limiters keys).
@@ -33,7 +32,7 @@ const (
 	LimitPeopleSearch LimitName = "people_search"
 )
 
-// defaultLimits are per signed-in person per minute.
+// defaultLimits are per signed-in person per minute (and the burst).
 var defaultLimits = map[LimitName]int{
 	LimitSelfEnrol:    20,
 	LimitCheckIn:      20,
@@ -48,7 +47,7 @@ type limitSet map[LimitName]Limiter
 func newLimitSet(override map[LimitName]Limiter) limitSet {
 	s := limitSet{}
 	for name, perMinute := range defaultLimits {
-		s[name] = newRateLimiter(perMinute, time.Minute)
+		s[name] = authbase.NewRateLimiter(authbase.RateLimitOptions{Rate: float64(perMinute) / 60, Burst: perMinute})
 	}
 	for name, l := range override {
 		s[name] = l
@@ -65,13 +64,15 @@ func (s limitSet) hook(name LimitName) func(http.Handler) http.Handler {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := "ip:" + clientip.FromRequest(r)
+			key := authbase.ClientIP(r)
 			if u, ok := auth.FromContext(r.Context()); ok {
 				key = "user:" + u.ID.String()
 			}
-			if !l.Allow(string(name) + "|" + key) {
-				w.Header().Set("Retry-After", strconv.Itoa(60))
-				httperror.Render(w, r, httperror.New(httperror.CodeRateLimited, "too many requests; try again in a minute"))
+			if ok, wait := l.Allow(string(name) + "|" + key); !ok {
+				secs := max(int(math.Ceil(wait.Seconds())), 1)
+				w.Header().Set("Retry-After", strconv.Itoa(secs))
+				httperror.Render(w, r, httperror.New(httperror.CodeRateLimited,
+					"too many requests; try again in "+strconv.Itoa(secs)+" seconds"))
 				return
 			}
 			next.ServeHTTP(w, r)

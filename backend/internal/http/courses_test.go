@@ -145,7 +145,7 @@ func setupRouterWith(t *testing.T, tweak func(*httpx.Deps)) (nethttp.Handler, *p
 	}
 
 	cfg := &config.Config{
-		AppEnv:         "test",
+		AppEnv:         "development",
 		HTTPAddr:       ":0",
 		DatabaseURL:    dsn,
 		AuthMode:       config.AuthModeDev,

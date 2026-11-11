@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/AGlElectronics/learn/backend/internal/domain"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 )
 
 func TestRepositoryAccessConfigLoads(t *testing.T) {
@@ -71,12 +72,22 @@ organization = "other-org"
 	if !slices.Contains(cfg.Roles(), domain.RoleCoordinator) {
 		t.Fatalf("roles = %v", cfg.Roles())
 	}
-	got := cfg.BindingsFor([]string{"/LEARN-TRAINER", "/learn-admin"})
+	gm := groupmatch.Config{}
+	got := cfg.BindingsFor(gm, []string{"/LEARN-TRAINER", "/learn-admin"})
 	if len(got) != 2 || got[0].Organization != "demo-org" || got[1].Organization != "other-org" {
 		t.Fatalf("bindings = %+v", got)
 	}
-	if len(cfg.BindingsFor(nil)) != 0 || len(cfg.BindingsFor([]string{"learn"})) != 0 {
+	if len(cfg.BindingsFor(gm, nil)) != 0 || len(cfg.BindingsFor(gm, []string{"learn"})) != 0 {
 		t.Fatal("unrelated groups matched")
+	}
+	// With a prefix, the event's own groups match the plain bindings;
+	// last mode matches by the last segment.
+	prefixed := groupmatch.Config{Prefix: "/con2026", Mode: groupmatch.ModeLast}
+	if got := cfg.BindingsFor(prefixed, []string{"/con2026/staff/learn-trainer"}); len(got) != 1 || got[0].Role != domain.RoleTrainer {
+		t.Fatalf("prefixed last-segment bindings = %+v", got)
+	}
+	if len(cfg.BindingsFor(groupmatch.Config{Prefix: "/con2026"}, []string{"/con2026/staff/learn-trainer"})) != 0 {
+		t.Fatal("full mode must not match a nested group by its last segment")
 	}
 }
 
@@ -125,7 +136,7 @@ func TestDefaultAccessConfig(t *testing.T) {
 		t.Fatal("organization_admin holds every permission")
 	}
 	var nilCfg *AccessConfig
-	if nilCfg.PermissionsForRole("x") != nil || nilCfg.HasRole("x") || nilCfg.Roles() != nil || nilCfg.BindingsFor([]string{"g"}) != nil {
+	if nilCfg.PermissionsForRole("x") != nil || nilCfg.HasRole("x") || nilCfg.Roles() != nil || nilCfg.BindingsFor(groupmatch.Config{}, []string{"g"}) != nil {
 		t.Fatal("nil config should grant nothing")
 	}
 }

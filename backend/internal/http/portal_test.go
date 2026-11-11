@@ -177,19 +177,21 @@ func TestPortalTodosAcceptsDenAudienceOnly(t *testing.T) {
 		t.Fatalf("access config: %v", err)
 	}
 	cfg := &config.Config{
-		AppEnv: "test", DatabaseURL: os.Getenv("TEST_DATABASE_URL"), AuthMode: config.AuthModeOIDC,
+		AppEnv: "development", DatabaseURL: os.Getenv("TEST_DATABASE_URL"), AuthMode: config.AuthModeOIDC,
 		OIDCIssuerURL: portalIssuer, OIDCClientID: "learn-spa", OIDCExtraAudiences: []string{"den-spa"},
 		CORSAllowedOrigins: []string{"https://learn.test", "https://den.test"}, PublicBaseURL: "https://learn.test",
 	}
 	h := httpx.NewRouter(httpx.Deps{
 		Config: cfg, Pool: pool, Logger: zerolog.Nop(), Access: access,
-		OIDCVerifier:   auth.NewOIDCVerifierWithKeySet(portalIssuer, "learn-spa", keys),
-		PortalVerifier: auth.NewPortalVerifierWithKeySet(portalIssuer, keys, auth.PortalAudiences(cfg)),
+		OIDCVerifier:   auth.NewOIDCVerifierWithKeySet(portalIssuer, cfg.Audience(), keys, cfg.GroupMatch),
+		PortalVerifier: auth.NewPortalVerifierWithKeySet(portalIssuer, keys, auth.PortalAudiences(cfg), cfg.GroupMatch),
 	}, "test")
 
-	token := func(aud string, groups []string) map[string]string {
+	// typed signs a token of the given type (Keycloak's typ claim: Bearer
+	// for access tokens, ID for ID tokens).
+	typed := func(typ, aud string, groups []string) map[string]string {
 		c := map[string]any{
-			"iss": portalIssuer, "sub": "kc-user-1", "aud": aud, "name": "Olive Oidc",
+			"iss": portalIssuer, "sub": "kc-user-1", "aud": aud, "name": "Olive Oidc", "typ": typ,
 			"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
 		}
 		if groups != nil {
@@ -197,6 +199,21 @@ func TestPortalTodosAcceptsDenAudienceOnly(t *testing.T) {
 		}
 		return map[string]string{"Authorization": "Bearer " + signJWT(t, key, c)}
 	}
+	token := func(aud string, groups []string) map[string]string {
+		if aud == "den-spa" {
+			return typed("ID", aud, groups)
+		}
+		return typed("Bearer", aud, groups)
+	}
+
+	t.Run("access token for learn-api only", func(t *testing.T) {
+		code, _ := rawCall(t, h, "GET", "/api/v1/me", typed("ID", "learn-api", []string{"team-red"}))
+		mustStatus(t, code, 401, "ID token for learn-api on /api/v1/me")
+		code, _ = rawCall(t, h, "GET", "/api/portal/todos", typed("ID", "learn-api", nil))
+		mustStatus(t, code, 401, "ID token for learn-api on /api/portal/todos")
+		code, _ = rawCall(t, h, "GET", "/api/v1/me", typed("Bearer", "learn-spa", []string{"team-red"}))
+		mustStatus(t, code, 401, "access token for the client id instead of learn-api")
+	})
 	userGroups := func() []string {
 		t.Helper()
 		var gs []string
@@ -209,7 +226,7 @@ func TestPortalTodosAcceptsDenAudienceOnly(t *testing.T) {
 		return gs
 	}
 
-	code, me := rawCall(t, h, "GET", "/api/v1/me", token("learn-spa", []string{"team-red"}))
+	code, me := rawCall(t, h, "GET", "/api/v1/me", token("learn-api", []string{"team-red"}))
 	mustStatus(t, code, 200, "learn token on /api/v1/me")
 	if g := userGroups(); len(g) != 1 || g[0] != "team-red" {
 		t.Fatalf("groups after learn login: %v", g)
@@ -233,7 +250,7 @@ func TestPortalTodosAcceptsDenAudienceOnly(t *testing.T) {
 		t.Fatalf("den token should resolve to the same user (%d rows, %v); me = %v", users, err, me)
 	}
 
-	code, _ = rawCall(t, h, "GET", "/api/portal/todos", token("learn-spa", nil))
+	code, _ = rawCall(t, h, "GET", "/api/portal/todos", token("learn-api", nil))
 	mustStatus(t, code, 200, "learn token on /api/portal/todos")
 	code, _ = rawCall(t, h, "GET", "/api/portal/todos", token("hr-spa", nil))
 	mustStatus(t, code, 401, "foreign audience on /api/portal/todos")

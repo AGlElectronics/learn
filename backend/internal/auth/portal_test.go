@@ -14,6 +14,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 
 	"github.com/AGlElectronics/learn/backend/internal/config"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 )
 
 const testIssuer = "https://auth.example.test/realms/test"
@@ -69,15 +70,24 @@ func TestAudienceAllowed(t *testing.T) {
 }
 
 func TestPortalAudiences(t *testing.T) {
-	cfg := &config.Config{OIDCClientID: "learn-spa", OIDCExtraAudiences: []string{"den-spa", " learn-spa ", ""}}
+	cfg := &config.Config{OIDCClientID: "learn-spa", OIDCExtraAudiences: []string{"den-spa", " learn-api ", ""}}
 	got := PortalAudiences(cfg)
-	if len(got) != 2 || got[0] != "learn-spa" || got[1] != "den-spa" {
-		t.Fatalf("PortalAudiences = %v", got)
+	if len(got) != 2 || got[0] != "learn-api" || got[1] != "den-spa" {
+		t.Fatalf("PortalAudiences = %v (default audience learn-api first)", got)
 	}
-	cfg.OIDCAudience = "learn-api"
-	if got := PortalAudiences(cfg); got[0] != "learn-api" {
+	cfg.OIDCAudience = "learn-test"
+	if got := PortalAudiences(cfg); got[0] != "learn-test" {
 		t.Fatalf("explicit audience first: %v", got)
 	}
+}
+
+// access marks claims as an access token (Keycloak's typ claim).
+func access(extra map[string]any) map[string]any {
+	out := map[string]any{"typ": "Bearer"}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
 }
 
 // The extra audience is accepted only by the portal verifier; the regular
@@ -88,11 +98,11 @@ func TestPortalVerifierAcceptsExtraAudienceOnly(t *testing.T) {
 		t.Fatalf("key: %v", err)
 	}
 	keys := &oidc.StaticKeySet{PublicKeys: []crypto.PublicKey{key.Public()}}
-	regular := NewOIDCVerifierWithKeySet(testIssuer, "learn-spa", keys)
-	portal := NewPortalVerifierWithKeySet(testIssuer, keys, []string{"learn-spa", "den-spa"})
+	regular := NewOIDCVerifierWithKeySet(testIssuer, "learn-api", keys, groupmatch.Config{})
+	portal := NewPortalVerifierWithKeySet(testIssuer, keys, []string{"learn-api", "den-spa"}, groupmatch.Config{})
 	ctx := context.Background()
 
-	den := signTestToken(t, key, testClaims("den-spa", nil))
+	den := signTestToken(t, key, testClaims("den-spa", map[string]any{"typ": "ID"}))
 	if _, err := regular.Verify(ctx, den); err == nil {
 		t.Fatal("regular verifier accepted a den-spa token")
 	}
@@ -104,9 +114,9 @@ func TestPortalVerifierAcceptsExtraAudienceOnly(t *testing.T) {
 		t.Fatalf("claims = %+v, groupsPresent = %v", c, groupsPresent)
 	}
 
-	learn := signTestToken(t, key, testClaims([]string{"learn-spa"}, map[string]any{"groups": []string{"team-red"}}))
+	learn := signTestToken(t, key, testClaims([]string{"learn-api"}, access(map[string]any{"groups": []string{"team-red"}})))
 	if _, err := regular.Verify(ctx, learn); err != nil {
-		t.Fatalf("regular verifier rejected learn token: %v", err)
+		t.Fatalf("regular verifier rejected learn access token: %v", err)
 	}
 	c, groupsPresent, err = portal.Verify(ctx, learn)
 	if err != nil || !groupsPresent || len(c.Groups) != 1 {
@@ -117,9 +127,51 @@ func TestPortalVerifierAcceptsExtraAudienceOnly(t *testing.T) {
 		"other audience": signTestToken(t, key, testClaims("hr-spa", nil)),
 		"other issuer":   signTestToken(t, key, testClaims("den-spa", map[string]any{"iss": "https://evil.test"})),
 		"expired":        signTestToken(t, key, testClaims("den-spa", map[string]any{"exp": time.Now().Add(-time.Hour).Unix()})),
+		"learn ID token": signTestToken(t, key, testClaims("learn-api", map[string]any{"typ": "ID"})),
 	} {
 		if _, _, err := portal.Verify(ctx, tok); err == nil {
 			t.Errorf("portal verifier accepted %s", name)
 		}
+	}
+}
+
+// The regular verifier wants an access token for learn-api; groups come
+// only from OIDC_GROUPS_CLAIM, never from roles.
+func TestOIDCVerifierAccessTokensAndGroupsClaim(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	keys := &oidc.StaticKeySet{PublicKeys: []crypto.PublicKey{key.Public()}}
+	ctx := context.Background()
+	v := NewOIDCVerifierWithKeySet(testIssuer, "learn-api", keys, groupmatch.Config{})
+
+	for name, extra := range map[string]map[string]any{
+		"ID token":      {"typ": "ID"},
+		"no typ":        {},
+		"refresh token": {"typ": "Refresh"},
+	} {
+		if _, err := v.Verify(ctx, signTestToken(t, key, testClaims("learn-api", extra))); err == nil {
+			t.Errorf("accepted %s", name)
+		}
+	}
+	if _, err := v.Verify(ctx, signTestToken(t, key, testClaims("learn-spa", access(nil)))); err == nil {
+		t.Error("accepted an access token for the client id, not learn-api")
+	}
+
+	tok := signTestToken(t, key, testClaims("learn-api", access(map[string]any{
+		"groups": []string{"/learn/cohort-a"}, "roles": []string{"learn-admin"},
+	})))
+	c, err := v.Verify(ctx, tok)
+	if err != nil || len(c.Groups) != 1 || c.Groups[0] != "/learn/cohort-a" {
+		t.Fatalf("groups = %v, %v (roles must not be merged)", c, err)
+	}
+
+	custom := NewOIDCVerifierWithKeySet(testIssuer, "learn-api", keys, groupmatch.Config{Claim: "realm_access.groups"})
+	tok = signTestToken(t, key, testClaims("learn-api", access(map[string]any{
+		"groups": []string{"ignored"}, "realm_access": map[string]any{"groups": []string{"/staff"}},
+	})))
+	if c, err := custom.Verify(ctx, tok); err != nil || len(c.Groups) != 1 || c.Groups[0] != "/staff" {
+		t.Fatalf("OIDC_GROUPS_CLAIM path: %v, %v", c, err)
 	}
 }

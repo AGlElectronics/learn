@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/AGlElectronics/learn/backend/internal/config"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 )
 
@@ -20,20 +21,23 @@ import (
 // (GET /api/portal/todos). Unlike OIDCVerifier it also accepts the
 // audiences in OIDC_EXTRA_AUDIENCES (Den's SPA), with the same issuer and
 // signature checks. Only mount it on read-only, caller-scoped routes.
+//
+// A token for Learn's own audience must be an access token, as everywhere
+// else. A token accepted only for an extra audience may still be an ID
+// token: Den's portal sends its ID token until Den fetches to-dos server
+// to server (token contract, point 3).
 type PortalVerifier struct {
 	verifier  *oidc.IDTokenVerifier
 	issuer    string
+	primary   string
 	audiences []string
+	groups    groupmatch.Config
 }
 
 // PortalAudiences is Learn's own audience followed by the extra ones.
 func PortalAudiences(cfg *config.Config) []string {
-	primary := cfg.OIDCAudience
-	if primary == "" {
-		primary = cfg.OIDCClientID
-	}
 	out := []string{}
-	for _, a := range append([]string{primary}, cfg.OIDCExtraAudiences...) {
+	for _, a := range append([]string{cfg.Audience()}, cfg.OIDCExtraAudiences...) {
 		if a = strings.TrimSpace(a); a != "" && !slices.Contains(out, a) {
 			out = append(out, a)
 		}
@@ -50,28 +54,33 @@ func NewPortalVerifier(ctx context.Context, cfg *config.Config) (*PortalVerifier
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery: %w", err)
 	}
-	return &PortalVerifier{
-		// The audience is checked against the allow-list in Verify.
-		verifier:  provider.Verifier(&oidc.Config{SkipClientIDCheck: true}),
-		issuer:    cfg.OIDCIssuerURL,
-		audiences: PortalAudiences(cfg),
-	}, nil
+	return NewPortalVerifierWithKeySet(cfg.OIDCIssuerURL, nil, PortalAudiences(cfg), cfg.GroupMatch).
+		withVerifier(provider.Verifier(&oidc.Config{SkipClientIDCheck: true})), nil
+}
+
+func (v *PortalVerifier) withVerifier(iv *oidc.IDTokenVerifier) *PortalVerifier {
+	v.verifier = iv
+	return v
 }
 
 // NewPortalVerifierWithKeySet builds a portal verifier without discovery
-// (tests, or a fixed JWKS).
-func NewPortalVerifierWithKeySet(issuer string, keySet oidc.KeySet, audiences []string) *PortalVerifier {
-	return &PortalVerifier{
-		verifier:  oidc.NewVerifier(issuer, keySet, &oidc.Config{SkipClientIDCheck: true}),
-		issuer:    issuer,
-		audiences: audiences,
+// (tests, or a fixed JWKS). audiences[0] is Learn's own audience.
+func NewPortalVerifierWithKeySet(issuer string, keySet oidc.KeySet, audiences []string, gm groupmatch.Config) *PortalVerifier {
+	v := &PortalVerifier{issuer: issuer, audiences: audiences, groups: gm}
+	if len(audiences) > 0 {
+		v.primary = audiences[0]
 	}
+	if keySet != nil {
+		// The audience is checked against the allow-list in Verify.
+		v.verifier = oidc.NewVerifier(issuer, keySet, &oidc.Config{SkipClientIDCheck: true})
+	}
+	return v
 }
 
 // NewOIDCVerifierWithKeySet builds the regular verifier without discovery
 // (tests, or a fixed JWKS).
-func NewOIDCVerifierWithKeySet(issuer, audience string, keySet oidc.KeySet) *OIDCVerifier {
-	return &OIDCVerifier{verifier: oidc.NewVerifier(issuer, keySet, &oidc.Config{ClientID: audience}), issuer: issuer}
+func NewOIDCVerifierWithKeySet(issuer, audience string, keySet oidc.KeySet, gm groupmatch.Config) *OIDCVerifier {
+	return &OIDCVerifier{verifier: oidc.NewVerifier(issuer, keySet, &oidc.Config{ClientID: audience}), issuer: issuer, groups: gm}
 }
 
 // AudienceAllowed reports whether any of the token's audiences is allowed.
@@ -85,36 +94,51 @@ func AudienceAllowed(tokenAudiences, allowed []string) bool {
 }
 
 // Verify validates the token and its audience. groupsPresent is false when
-// the token carries no groups/roles claim at all (e.g. Den's id_token), so
-// the caller's cached groups must be left alone.
+// the token carries no groups claim (OIDC_GROUPS_CLAIM) at all, e.g. Den's
+// ID token, so the caller's cached groups must be left alone.
 func (v *PortalVerifier) Verify(ctx context.Context, bearer string) (claims *OIDCClaims, groupsPresent bool, err error) {
 	bearer = strings.TrimSpace(bearer)
 	if bearer == "" {
 		return nil, false, errors.New("missing bearer token")
 	}
-	idToken, err := v.verifier.Verify(ctx, bearer)
+	token, err := v.verifier.Verify(ctx, bearer)
 	if err != nil {
 		return nil, false, fmt.Errorf("verify token: %w", err)
 	}
-	if !AudienceAllowed(idToken.Audience, v.audiences) {
-		return nil, false, fmt.Errorf("token audience %v not accepted", idToken.Audience)
+	if !AudienceAllowed(token.Audience, v.audiences) {
+		return nil, false, fmt.Errorf("token audience %v not accepted", token.Audience)
 	}
-	var c OIDCClaims
-	if err := idToken.Claims(&c); err != nil {
-		return nil, false, fmt.Errorf("parse claims: %w", err)
+	c, err := parseClaims(token, v.groups)
+	if err != nil {
+		return nil, false, err
+	}
+	if v.primary != "" && slices.Contains(token.Audience, v.primary) && !isAccessToken(c) {
+		return nil, false, errIDToken
 	}
 	var raw map[string]json.RawMessage
-	if err := idToken.Claims(&raw); err != nil {
+	if err := token.Claims(&raw); err != nil {
 		return nil, false, fmt.Errorf("parse claims: %w", err)
 	}
-	_, hasGroups := raw["groups"]
-	_, hasRoles := raw["roles"]
-	if c.Subject == "" {
-		return nil, false, errors.New("token missing sub claim")
-	}
 	c.Issuer = v.issuer
-	c.Groups = mergeUnique(c.Groups, c.Roles)
-	return &c, hasGroups || hasRoles, nil
+	return c, hasClaim(raw, v.groups.ClaimName()), nil
+}
+
+// hasClaim reports whether claims carry name, also as a dotted path into
+// nested objects ("realm_access.roles").
+func hasClaim(claims map[string]json.RawMessage, name string) bool {
+	if _, ok := claims[name]; ok {
+		return true
+	}
+	parts := strings.Split(name, ".")
+	cur, ok := claims[parts[0]]
+	for _, p := range parts[1:] {
+		var obj map[string]json.RawMessage
+		if !ok || json.Unmarshal(cur, &obj) != nil {
+			return false
+		}
+		cur, ok = obj[p]
+	}
+	return ok && len(parts) > 1
 }
 
 // LoadOrProvisionPortalUser is LoadOrProvisionOIDCUser for portal tokens.

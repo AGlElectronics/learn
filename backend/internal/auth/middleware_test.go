@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/AGlElectronics/learn/backend/internal/config"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 )
 
 func TestBearerFromHeader(t *testing.T) {
@@ -71,10 +72,12 @@ func TestMiddlewareRefusesWithoutIdentity(t *testing.T) {
 		header   string
 		want     int
 	}{
-		"oidc without a verifier": {&config.Config{AuthMode: config.AuthModeOIDC}, nil, "Bearer x", http.StatusInternalServerError},
-		"oidc without a bearer":   {&config.Config{AuthMode: config.AuthModeOIDC}, &OIDCVerifier{}, "", http.StatusUnauthorized},
-		"oidc with basic auth":    {&config.Config{AuthMode: config.AuthModeOIDC}, &OIDCVerifier{}, "Basic eDp5", http.StatusUnauthorized},
-		"unknown mode":            {&config.Config{AuthMode: "magic"}, nil, "", http.StatusInternalServerError},
+		"oidc without a verifier":  {&config.Config{AuthMode: config.AuthModeOIDC}, nil, "Bearer x", http.StatusInternalServerError},
+		"oidc without a bearer":    {&config.Config{AuthMode: config.AuthModeOIDC}, &OIDCVerifier{}, "", http.StatusUnauthorized},
+		"oidc with basic auth":     {&config.Config{AuthMode: config.AuthModeOIDC}, &OIDCVerifier{}, "Basic eDp5", http.StatusUnauthorized},
+		"unknown mode":             {&config.Config{AuthMode: "magic"}, nil, "", http.StatusInternalServerError},
+		"dev mode in production":   {&config.Config{AuthMode: config.AuthModeDev, AppEnv: "production"}, nil, "", http.StatusInternalServerError},
+		"dev mode without APP_ENV": {&config.Config{AuthMode: config.AuthModeDev}, nil, "", http.StatusInternalServerError},
 	} {
 		t.Run(name, func(t *testing.T) {
 			reached = false
@@ -84,7 +87,7 @@ func TestMiddlewareRefusesWithoutIdentity(t *testing.T) {
 				req.Header.Set("Authorization", tc.header)
 			}
 			req.Header.Set("X-Dev-User", "dev-admin")
-			Middleware(tc.cfg, NewResolver(nil, DefaultAccessConfig()), tc.verifier)(next).ServeHTTP(rec, req)
+			Middleware(tc.cfg, NewResolver(nil, DefaultAccessConfig(), groupmatch.Config{}), tc.verifier)(next).ServeHTTP(rec, req)
 			if rec.Code != tc.want || reached {
 				t.Fatalf("status %d (handler reached: %v), want %d", rec.Code, reached, tc.want)
 			}

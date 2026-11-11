@@ -79,7 +79,7 @@ func setupQualRouter(t *testing.T, mutate func(*config.Config), notifier *notify
 		t.Fatalf("load access config: %v", err)
 	}
 	cfg := &config.Config{
-		AppEnv:         "test",
+		AppEnv:         "development",
 		HTTPAddr:       ":0",
 		DatabaseURL:    dsn,
 		AuthMode:       config.AuthModeDev,

@@ -14,7 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/AGlElectronics/learn/backend/internal/denlink"
 	"github.com/AGlElectronics/learn/backend/internal/domain"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 )
 
@@ -23,6 +25,10 @@ type Service struct {
 	pool *pgxpool.Pool
 	// feedbackPepper keys the anonymous-feedback dedupe hash.
 	feedbackPepper []byte
+	// groups is the group matching rule (SetGroupMatch).
+	groups groupmatch.Config
+	// denSettings is Den's module settings (SetModuleSettings); nil = standalone.
+	denSettings func() *denlink.ModuleSettings
 }
 
 // NewService constructs the course service.

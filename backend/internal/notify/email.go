@@ -40,7 +40,11 @@ func (e *Email) Send(ctx context.Context, r Recipient, n Notice) error {
 	if to == "" {
 		return ErrNoAddress
 	}
-	return e.sender.Send(ctx, mail.Message{To: to, Subject: n.Subject, Body: emailBody(r, n)})
+	err := e.sender.Send(ctx, mail.Message{To: to, Subject: n.Subject, Body: emailBody(r, n)})
+	if errors.Is(err, mail.ErrNotConfigured) {
+		return ErrChannelOff
+	}
+	return err
 }
 
 func emailBody(r Recipient, n Notice) string {
@@ -57,6 +61,11 @@ func emailBody(r Recipient, n Notice) string {
 }
 
 func isNilSender(s mail.Sender) bool {
-	v, ok := s.(*mail.SMTP)
-	return ok && v == nil
+	switch v := s.(type) {
+	case *mail.SMTP:
+		return v == nil
+	case *mail.Switch:
+		return v == nil
+	}
+	return false
 }

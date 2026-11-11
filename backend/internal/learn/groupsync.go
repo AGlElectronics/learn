@@ -14,6 +14,7 @@ import (
 
 	"github.com/AGlElectronics/learn/backend/internal/config"
 	"github.com/AGlElectronics/learn/backend/internal/db"
+	"github.com/AGlElectronics/learn/backend/internal/groupmatch"
 	"github.com/AGlElectronics/learn/backend/internal/httperror"
 	"github.com/AGlElectronics/learn/backend/internal/keycloakadmin"
 )
@@ -28,22 +29,27 @@ const (
 
 const groupSyncInterval = 5 * time.Minute
 
-// NormalizeGroup is the comparison form of a group: trimmed, one leading
-// "/" dropped, lower-case. Links, the user_groups cache, team boards and
-// the token's groups claim are all stored and compared in this form, and a
-// link matches only the full path ("learn/cohort-a" never matches a plain
-// "cohort-a" claim).
-// TODO(shared/groupmatch): replace with the shared groupmatch package.
-func NormalizeGroup(g string) string {
-	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(g), "/"))
-}
+// NormalizeGroup is the stored form of a group (groupmatch.Normalize):
+// trimmed, one leading "/" dropped, lower-case. Links, the user_groups
+// cache and team boards store it; whether a person's group matches a
+// stored one is decided by groupmatch (OIDC_GROUP_MATCH, OIDC_GROUP_PREFIX),
+// never by comparing strings.
+func NormalizeGroup(g string) string { return groupmatch.Normalize(g) }
+
+// SetGroupMatch sets the group matching rule (OIDC_GROUPS_CLAIM,
+// OIDC_GROUP_MATCH, OIDC_GROUP_PREFIX). Set it before serving requests.
+func (s *Service) SetGroupMatch(gm groupmatch.Config) { s.groups = gm }
 
 // GroupLinkable reports whether a trainer may see and link the group at
 // path under LEARN_LINKABLE_GROUPS patterns: "*" matches every group,
 // "/a/*" every group below /a (not /a itself), anything else that exact
-// path. Comparison uses NormalizeGroup.
-func GroupLinkable(path string, patterns []string) bool {
-	key := NormalizeGroup(path)
+// path. Path and patterns are compared as full paths without
+// OIDC_GROUP_PREFIX, so "/learn/*" also allows "/con2026/learn/cohort-a"
+// when the prefix is /con2026.
+func GroupLinkable(gm groupmatch.Config, path string, patterns []string) bool {
+	full := gm
+	full.Mode = groupmatch.ModeFull
+	key := full.Key(path)
 	if key == "" {
 		return false
 	}
@@ -53,10 +59,10 @@ func GroupLinkable(path string, patterns []string) bool {
 		case p == "*":
 			return true
 		case strings.HasSuffix(p, "/*"):
-			if parent := NormalizeGroup(strings.TrimSuffix(p, "/*")); parent != "" && strings.HasPrefix(key, parent+"/") {
+			if parent := full.Key(strings.TrimSuffix(p, "/*")); parent != "" && strings.HasPrefix(key, parent+"/") {
 				return true
 			}
-		case NormalizeGroup(p) == key:
+		case full.Key(p) == key:
 			return true
 		}
 	}
@@ -255,7 +261,10 @@ func enrolGroupMembers(ctx context.Context, tx pgx.Tx, courseID uuid.UUID, membe
 // group enrols (or reactivates), leaving every linked group of a course
 // makes the group enrolment inactive. A no-op when nothing changed.
 func (s *Service) ApplyLoginGroups(ctx context.Context, userID uuid.UUID, groups []string) error {
-	norm := normalizeGroups(groups)
+	norm, err := s.groupCacheKeys(ctx, groups)
+	if err != nil {
+		return err
+	}
 	var current []string
 	if err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(array_agg(group_name ORDER BY group_name), '{}') FROM user_groups WHERE user_id = $1`,
@@ -313,6 +322,33 @@ func normalizeGroups(groups []string) []string {
 	return slices.Compact(out)
 }
 
+// groupCacheKeys is what the user_groups cache holds for a person with the
+// token groups groups: every stored grant (course and path links, team
+// board groups) groupmatch says they match, plus their own groups in stored
+// form (those that match themselves; the OIDC_GROUP_PREFIX parent does
+// not). The cache can then be joined to the grants with "=", even when a
+// prefix or OIDC_GROUP_MATCH=last makes the stored and token forms differ.
+func (s *Service) groupCacheKeys(ctx context.Context, groups []string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT group_name FROM course_group_links
+		UNION SELECT group_name FROM path_group_links
+		UNION SELECT group_name FROM team_board_groups`)
+	if err != nil {
+		return nil, err
+	}
+	grants, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	keys := s.groups.Matching(groups, grants)
+	for _, g := range groups {
+		if n := NormalizeGroup(g); n != "" && s.groups.Match([]string{g}, n) {
+			keys = append(keys, n)
+		}
+	}
+	return normalizeGroups(keys), nil
+}
+
 // ----------------------------------------------------------------------------
 // Keycloak sync worker
 // ----------------------------------------------------------------------------
@@ -352,8 +388,9 @@ func (g *GroupSync) ListGroups(ctx context.Context) ([]keycloakadmin.Group, erro
 	return g.dir.ListGroups(ctx)
 }
 
-// FindGroup returns the directory group at path (compared like links), or
-// ok = false.
+// FindGroup returns the directory group at path, or ok = false. The exact
+// path (in stored form) wins; otherwise a path given without
+// OIDC_GROUP_PREFIX finds the one group below the prefix.
 func (g *GroupSync) FindGroup(ctx context.Context, path string) (keycloakadmin.Group, bool, error) {
 	groups, err := g.dir.ListGroups(ctx)
 	if err != nil {
@@ -364,6 +401,19 @@ func (g *GroupSync) FindGroup(ctx context.Context, path string) (keycloakadmin.G
 		if NormalizeGroup(grp.Path) == key {
 			return grp, true, nil
 		}
+	}
+	full := g.svc.groups
+	full.Mode = groupmatch.ModeFull
+	var found []keycloakadmin.Group
+	if k := full.Key(path); k != "" {
+		for _, grp := range groups {
+			if full.Key(grp.Path) == k {
+				found = append(found, grp)
+			}
+		}
+	}
+	if len(found) == 1 {
+		return found[0], true, nil
 	}
 	return keycloakadmin.Group{}, false, nil
 }

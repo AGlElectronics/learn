@@ -103,11 +103,22 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 
 	brandProvider := brand.New(cfg)
-	den := denlink.New(pool, denlink.Config{Slug: "learn", Version: Version, InternalURL: cfg.DenInternalURL, Mode: cfg.DenMode}, logger)
+	// Den link: pairing, the settings bundle, revocation. Open fails when
+	// DEN_LINK_ENCRYPTION_KEY is wrong or the stored link can't be read.
+	den, err := denlink.Open(pool, cfg.DenConfig(Version), logger)
+	if err != nil {
+		return fmt.Errorf("den link: %w", err)
+	}
 	if err := den.Restore(ctx); err != nil {
 		logger.Warn().Err(err).Msg("den link: load failed")
 	}
 	go den.Run(ctx)
+
+	// svc is the learn service with the group matching rule and Den's
+	// module settings; workers share it.
+	svc := learn.NewService(pool)
+	svc.SetGroupMatch(cfg.GroupMatch)
+	svc.SetModuleSettings(den.ModuleSettings)
 
 	// Keycloak group sync: every 5 minutes, off when GROUP_DIRECTORY=off or
 	// KEYCLOAK_* is unset.
@@ -115,7 +126,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("init keycloak admin client: %w", err)
 	}
-	if groupSync := learn.NewGroupSync(learn.NewService(pool), keycloak, learn.GroupSyncIssuer(cfg), logger); groupSync != nil {
+	if groupSync := learn.NewGroupSync(svc, keycloak, learn.GroupSyncIssuer(cfg), logger); groupSync != nil {
 		go groupSync.Run(ctx)
 		logger.Info().Str("issuer", learn.GroupSyncIssuer(cfg)).Strs("linkable_groups", cfg.LinkableGroups).
 			Msg("keycloak group directory and sync enabled")
@@ -125,7 +136,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 
 	// Retention: anonymise inactive people, delete old audit entries.
-	go learn.NewService(pool).RunRetention(ctx, audit.New(pool, logger), httpx.DenSettingsFunc(den), logger)
+	go svc.RunRetention(ctx, audit.New(pool, logger), logger)
 
 	// Object storage for the media library: optional. Unset S3_ENDPOINT, or
 	// storage unreachable at start, means uploads answer 503.
@@ -139,32 +150,29 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	case fileClient != nil:
 		store = fileClient
 		logger.Info().Str("bucket", fileClient.Bucket()).Msg("object storage ready")
-		go learn.NewMediaService(learn.NewService(pool), store).RunSweeper(ctx, logger)
+		go learn.NewMediaService(svc, store).RunSweeper(ctx, logger)
 	default:
 		logger.Info().Msg("S3_ENDPOINT not set; media uploads disabled")
 	}
 
-	// Notifications: email when SMTP_HOST is set, Telegram when
-	// TELEGRAM_BOT_TOKEN is (and the telegram_enabled setting is on). The
-	// reminder worker runs at start and hourly.
-	var mailer mail.Sender
-	if smtp := mail.NewSMTP(mail.SMTPConfig{
+	// Notifications: email through Den's mail server (smtp.* module
+	// settings) or SMTP_HOST, Telegram when TELEGRAM_BOT_TOKEN is set (and
+	// the telegram_enabled setting is on). Email is decided per message, so
+	// the channel is always there. The reminder worker runs at start and
+	// hourly.
+	mailer := mail.NewSwitch(mail.NewSMTP(mail.SMTPConfig{
 		Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
 		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName,
-	}); smtp != nil {
-		mailer = smtp
+	}), denSMTP(den))
+	if source, warning := mailer.Source(); warning != "" {
+		logger.Warn().Str("mail_source", source).Msg(warning)
 	}
-	settingsSvc := learn.NewService(pool)
 	notifier := notify.New(logger, notify.NewEmail(mailer), notify.NewTelegram(notify.TelegramConfig{
-		BotToken: cfg.TelegramBotToken, APIURL: cfg.TelegramAPIURL, Enabled: settingsSvc.TelegramEnabled, Logger: logger,
+		BotToken: cfg.TelegramBotToken, APIURL: cfg.TelegramAPIURL, Enabled: svc.TelegramEnabled, Logger: logger,
 	}))
-	if channels := notifier.Channels(); len(channels) > 0 {
-		reminders := learn.NewReminders(learn.NewService(pool), notifier, cfg.PublicBaseURL, httpx.OrgNameFunc(brandProvider, den), logger)
-		go reminders.Run(ctx)
-		logger.Info().Strs("channels", channels).Msg("reminders enabled")
-	} else {
-		logger.Info().Msg("no notification channel configured (SMTP_HOST and TELEGRAM_BOT_TOKEN unset); reminders disabled")
-	}
+	reminders := learn.NewReminders(svc, notifier, cfg.PublicBaseURL, httpx.OrgNameFunc(brandProvider, den), logger)
+	go reminders.Run(ctx)
+	logger.Info().Strs("channels", notifier.Channels()).Msg("reminders enabled")
 
 	router := httpx.NewRouter(httpx.Deps{
 		Config:         cfg,
@@ -178,6 +186,8 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		Keycloak:       keycloak,
 		Files:          store,
 		Notifier:       notifier,
+		Service:        svc,
+		Mail:           mailer,
 	}, Version)
 
 	server := &nethttp.Server{
@@ -191,6 +201,24 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 
 	return runServer(ctx, server, pool, cfg.ShutdownTimeout, logger)
+}
+
+// denSMTP reads the mail server from Den's module settings (smtp.*).
+func denSMTP(den *denlink.Client) mail.DenSMTP {
+	return func() (mail.SMTPConfig, bool, bool) {
+		ms := den.ModuleSettings()
+		if ms == nil {
+			return mail.SMTPConfig{}, false, false
+		}
+		s, ok := ms.SMTP()
+		if !ok {
+			return mail.SMTPConfig{}, false, false
+		}
+		return mail.SMTPConfig{
+			Host: s.Host, Port: s.Port, Username: s.Username,
+			From: s.From, FromName: s.FromName, Security: s.Security,
+		}, s.PasswordSet, true
+	}
 }
 
 func runServer(ctx context.Context, server *nethttp.Server, pool *pgxpool.Pool, shutdownTimeout time.Duration, logger zerolog.Logger) error {

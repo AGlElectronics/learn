@@ -15,7 +15,7 @@ import (
 //   - AuthModeDev reads X-Dev-User (identity; default DEV_DEFAULT_USER) and
 //     X-Dev-Groups (comma-separated simulated IdP groups; default
 //     DEV_DEFAULT_GROUPS) and provisions a local user under the reserved
-//     "dev" issuer. Not for production.
+//     "dev" issuer. Only with APP_ENV=development.
 //   - AuthModeOIDC verifies the Authorization: Bearer <JWT>, then
 //     provisions/refreshes the user from (issuer, subject).
 //
@@ -28,6 +28,12 @@ func Middleware(cfg *config.Config, resolver *Resolver, oidcVerifier *OIDCVerifi
 
 			switch cfg.AuthMode {
 			case config.AuthModeDev:
+				if !cfg.Auth().DevAuth() {
+					// Config.Load refuses this; a hand-built config must not
+					// open dev sign-in outside APP_ENV=development either.
+					httperror.Render(w, r, httperror.Internal(nil))
+					return
+				}
 				name := r.Header.Get("X-Dev-User")
 				if name == "" {
 					name = cfg.DevDefaultUser
