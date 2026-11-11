@@ -1,11 +1,12 @@
 // Package notify fans Learn notices (assignments, results, reminders) out to
-// the delivery channels a deployment has enabled: email today, Telegram
-// later. A failing channel is logged and skipped so one broken integration
-// never blocks the others.
+// the delivery channels a deployment has enabled: email and Telegram. A
+// failing channel is logged and skipped so one broken integration never
+// blocks the others; only real deliveries are counted.
 package notify
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -82,6 +83,9 @@ func (n *Notifier) Notify(ctx context.Context, notice Notice, recipients ...Reci
 				return sent
 			}
 			if err := c.Send(ctx, r, notice); err != nil {
+				if errors.Is(err, ErrNoAddress) || errors.Is(err, ErrChannelOff) {
+					continue // nothing to deliver on this channel; not a failure, not delivered
+				}
 				n.logger.Warn().Err(err).
 					Str("channel", c.Name()).
 					Str("user_id", r.UserID.String()).

@@ -235,6 +235,9 @@ func NewRouter(deps Deps, version string) http.Handler {
 				mountTeamBoardRoutes(secure, courses)
 				mountTranslationRoutes(secure, courses)
 				mountChannelRoutes(secure, courses.svc, deps.Notifier)
+				mountSettingsRoutes(secure, &settingsHandler{
+					svc: courses.svc, audit: audits, den: DenSettingsFunc(den), cfg: deps.Config, directory: groupSync != nil,
+				})
 				secure.With(requirePermission(domain.PermSettingsManage)).Post("/reminders/run", runRemindersHandler(reminders))
 			})
 		})

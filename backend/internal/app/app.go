@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 
+	"github.com/AGlElectronics/learn/backend/internal/audit"
 	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/brand"
 	"github.com/AGlElectronics/learn/backend/internal/config"
@@ -108,15 +109,23 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 	go den.Run(ctx)
 
-	// Keycloak group sync: every 5 minutes, off when KEYCLOAK_* is unset.
+	// Keycloak group sync: every 5 minutes, off when GROUP_DIRECTORY=off or
+	// KEYCLOAK_* is unset.
 	keycloak, err := keycloakadmin.NewFromConfig(cfg)
 	if err != nil {
 		return fmt.Errorf("init keycloak admin client: %w", err)
 	}
 	if groupSync := learn.NewGroupSync(learn.NewService(pool), keycloak, learn.GroupSyncIssuer(cfg), logger); groupSync != nil {
 		go groupSync.Run(ctx)
-		logger.Info().Str("issuer", learn.GroupSyncIssuer(cfg)).Msg("keycloak group sync enabled")
+		logger.Info().Str("issuer", learn.GroupSyncIssuer(cfg)).Strs("linkable_groups", cfg.LinkableGroups).
+			Msg("keycloak group directory and sync enabled")
+	} else {
+		logger.Info().Str("group_directory", string(cfg.GroupDirectory)).
+			Msg("group directory off; group links use the groups people sign in with")
 	}
+
+	// Retention: anonymise inactive people, delete old audit entries.
+	go learn.NewService(pool).RunRetention(ctx, audit.New(pool, logger), httpx.DenSettingsFunc(den), logger)
 
 	// Object storage for the media library: optional. Unset S3_ENDPOINT, or
 	// storage unreachable at start, means uploads answer 503.
@@ -135,8 +144,9 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		logger.Info().Msg("S3_ENDPOINT not set; media uploads disabled")
 	}
 
-	// Notifications: email when SMTP_HOST is set, Telegram stub when
-	// TELEGRAM_BOT_TOKEN is. The reminder worker runs at start and hourly.
+	// Notifications: email when SMTP_HOST is set, Telegram when
+	// TELEGRAM_BOT_TOKEN is (and the telegram_enabled setting is on). The
+	// reminder worker runs at start and hourly.
 	var mailer mail.Sender
 	if smtp := mail.NewSMTP(mail.SMTPConfig{
 		Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
@@ -144,13 +154,16 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}); smtp != nil {
 		mailer = smtp
 	}
-	notifier := notify.New(logger, notify.NewEmail(mailer), notify.NewTelegram(cfg.TelegramBotToken, logger))
+	settingsSvc := learn.NewService(pool)
+	notifier := notify.New(logger, notify.NewEmail(mailer), notify.NewTelegram(notify.TelegramConfig{
+		BotToken: cfg.TelegramBotToken, APIURL: cfg.TelegramAPIURL, Enabled: settingsSvc.TelegramEnabled, Logger: logger,
+	}))
 	if channels := notifier.Channels(); len(channels) > 0 {
 		reminders := learn.NewReminders(learn.NewService(pool), notifier, cfg.PublicBaseURL, httpx.OrgNameFunc(brandProvider, den), logger)
 		go reminders.Run(ctx)
 		logger.Info().Strs("channels", channels).Msg("reminders enabled")
 	} else {
-		logger.Info().Msg("no notification channel configured (SMTP_HOST unset); reminders disabled")
+		logger.Info().Msg("no notification channel configured (SMTP_HOST and TELEGRAM_BOT_TOKEN unset); reminders disabled")
 	}
 
 	router := httpx.NewRouter(httpx.Deps{
