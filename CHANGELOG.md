@@ -119,10 +119,11 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 - GDPR: `POST /api/v1/users/{id}/erase` (and **Settings → Erase a
   person**) anonymises a person; their progress, attempts and certificates
   stay, and certificates keep verifying with the name "Former learner". A
-  retention job anonymises people inactive for `inactive_user_months` and
-  deletes audit entries older than `audit_log_months`. Den's module settings
-  decide the values while paired; standalone, admins set them in
-  **Settings**. The defaults (36 and 24 months) are pending legal review.
+  retention job anonymises people inactive for `inactive_users_days` and
+  deletes audit entries older than `audit_log_days`. Den's module settings
+  (`retention.inactive_users_days`, `learn.audit_log_days`) decide the values
+  while paired; standalone, admins set them in **Settings**. The defaults
+  (1095 and 730 days) are pending legal review.
 - `monitorSession` in the web app's `/config.json` (default `true`) turns
   OIDC session monitoring off for identity providers without
   `check_session_iframe`.
@@ -145,6 +146,40 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 - People search (`GET /api/v1/users`) only finds people of the caller's
   organizations and needs `enrol.manage` or `staff.manage`; trainers see
   names only, never email addresses (also in enrolment lists).
+- **BREAKING:** the API checks **access tokens** for audience `learn-api`
+  (`OIDC_AUDIENCE`, default `learn-api`) and refuses ID tokens. Add a
+  Keycloak audience mapper on `learn-spa` that puts `learn-api` on access
+  tokens only. The web app keeps tokens in memory and signs in again
+  silently after a reload; it no longer sends the ID token.
+- **BREAKING:** `AUTH_MODE` defaults to `oidc` and `APP_ENV` to
+  `production`. `AUTH_MODE=dev` stops the backend unless
+  `APP_ENV=development`. Local setups (`.env.example`, Compose) set
+  `APP_ENV=development` explicitly. Outside development the `X-Dev-User`
+  and `X-Dev-Groups` headers are ignored and are not allowed through CORS.
+- **BREAKING:** group links and role bindings match with the shared rule
+  (`OIDC_GROUP_MATCH=full` or `last`, optional `OIDC_GROUP_PREFIX`). Groups
+  are read only from `OIDC_GROUPS_CLAIM` (default `groups`); the `roles`
+  claim is no longer merged in. Turn **Full group path** on in Keycloak's
+  groups mapper so nested groups such as `/learn/demo-cohort` match. A
+  top-level group still matches its short name.
+- **BREAKING:** the stored Den credential is encrypted with
+  `DEN_LINK_ENCRYPTION_KEY` (32 random bytes, base64; required unless
+  `APP_ENV=development`). Add it to `learn-secrets` (and
+  `DEN_LINK_ENCRYPTION_KEY_PREVIOUS` only while rotating). A credential
+  stored in plain text is encrypted on the first read. When Den rejects
+  the credential the Den connection card shows the revoked state and a
+  **Pair again** form; Learn does not pair again by itself.
+- **BREAKING:** retention is stored in days
+  (`inactive_users_days`, `audit_log_days`), not months. Existing rows are
+  converted (a month is 365/12 days). While paired, Den's
+  `retention.inactive_users_days` and `learn.audit_log_days` win. Set those
+  keys in Den instead of the old month fields.
+- **BREAKING:** `GET /api/role-catalog` needs `HR_SERVICE_TOKEN` (at least
+  32 characters, the same value as on HR) or a staff sign-in. The response
+  adds `revision` (also the `ETag`; a matching `If-None-Match` returns
+  `304`), `group_display`, `privileged` and `dynamic`.
+- Mail uses Den's SMTP settings when Den has configured a server, and
+  Learn's own SMTP settings otherwise.
 
 ### Security
 
@@ -171,3 +206,20 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   (`LEARN_FEEDBACK_PEPPER`) instead of a constant in the code.
 - `.env.example` no longer contains a service token; the dev value stays in
   `infra/docker-compose.yml` only.
+- Safe defaults and the shared error codes (`bad_request`,
+  `request_too_large`, `unsupported_media_type`, `rate_limited`) from
+  [Shared code](https://aglelectronics.github.io/con-services/concepts/shared-code/#error-codes).
+  JSON request bodies are limited to 1 MiB (`413 request_too_large`).
+  Every API response carries `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`,
+  `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`
+  and exposes `X-Request-ID` to the browser.
+- The web app's nginx sends the shared security headers (Content Security
+  Policy, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`) only
+  on the locations that serve the app. The allowed origins come from
+  `KEYCLOAK_ORIGIN`, `DEN_ORIGIN`, `S3_ORIGIN` and `EXTRA_CONNECT_SRC`.
+- Helm chart: `existingSecret` must hold `DEN_LINK_ENCRYPTION_KEY` (the
+  backend pod does not start without it unless `APP_ENV` is `development`)
+  and may hold `DEN_LINK_ENCRYPTION_KEY_PREVIOUS` and `HR_SERVICE_TOKEN`.
+  `config.OIDC_AUDIENCE` is `learn-api`. The web app container gets the
+  Content Security Policy origins from `frontend.securityHeaders`.

@@ -125,8 +125,13 @@ services:
       DEV_DEFAULT_GROUPS: learn-admin
       OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
-      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      # Access-token audience (Keycloak audience mapper on learn-spa).
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-learn-api}
       OIDC_EXTRA_AUDIENCES: ${OIDC_EXTRA_AUDIENCES:-}
+      # Groups come only from this claim. full: the whole path must match.
+      OIDC_GROUPS_CLAIM: ${OIDC_GROUPS_CLAIM:-groups}
+      OIDC_GROUP_MATCH: ${OIDC_GROUP_MATCH:-full}
+      OIDC_GROUP_PREFIX: ${OIDC_GROUP_PREFIX:-}
       ACCESS_CONFIG_PATH: /etc/learn/access-config.toml
       # Browser-facing SPA origin used for links in notifications.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3005}
@@ -157,6 +162,13 @@ services:
       # Shared secret for HR -> Learn service calls. DEV-ONLY value: outside
       # APP_ENV=development the backend refuses short or placeholder secrets.
       LEARN_SERVICE_TOKEN: ${LEARN_SERVICE_TOKEN:-learn-service-dev-token}
+      # Lets HR read GET /api/role-catalog. Empty: signed-in staff only.
+      HR_SERVICE_TOKEN: ${HR_SERVICE_TOKEN:-}
+      # DEV ONLY (public value): encrypts the stored Den credential. Production:
+      # a random key per installation from a secret manager, see
+      # https://aglelectronics.github.io/con-services/operations/secrets/#den-link-encryption-key
+      DEN_LINK_ENCRYPTION_KEY: ${DEN_LINK_ENCRYPTION_KEY:-ZGV2LW9ubHktbGVhcm4tZGVuLWxpbmsta2V5LTAwMDA=}
+      DEN_ALLOWED_HOSTS: ${DEN_ALLOWED_HOSTS:-}
       # Keys the anonymous feedback dedupe hash. DEV-ONLY value.
       LEARN_FEEDBACK_PEPPER: ${LEARN_FEEDBACK_PEPPER:-learn-dev-only-feedback-pepper}
       # Empty = Telegram notifications disabled.
@@ -184,6 +196,13 @@ services:
       # Web app settings (/config.json). Dev sign-in by default; for real
       # sign-in set FRONTEND_CONFIG to your own file (docs: configuration).
       - ${FRONTEND_CONFIG:-./frontend-config/compose.json}:/etc/conservices/config.json:ro
+    environment:
+      # Origins the Content Security Policy allows besides the app itself
+      # (infra/security-headers.conf.template). S3_ORIGIN is the browser-facing
+      # address of presigned uploads.
+      KEYCLOAK_ORIGIN: ${KEYCLOAK_ORIGIN:-http://localhost:8085}
+      DEN_ORIGIN: ${DEN_ORIGIN:-https://den.conservices.test}
+      S3_ORIGIN: ${S3_ORIGIN:-http://localhost:9030}
     restart: unless-stopped
     depends_on:
       - backend

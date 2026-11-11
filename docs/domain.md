@@ -282,11 +282,11 @@ without removing the token; skipped channels never count as delivered.
   keep verifying. Their audit entries keep the action with the actor name
   "Erased user".
 - A retention job (every six hours, advisory lock) anonymises people
-  without a sign-in or group sync for `inactive_user_months` and deletes
-  audit entries older than `audit_log_months` (0 = never). Den's module
-  settings (`settings.data.retention` in the integration bundle) decide
-  while paired; otherwise `module_settings`, otherwise 36 and 24 months
-  (pending legal review).
+  without a sign-in or group sync for `inactive_users_days` and deletes
+  audit entries older than `audit_log_days` (0 = never). While paired,
+  Den's module settings `retention.inactive_users_days` and
+  `learn.audit_log_days` win; otherwise `module_settings`, otherwise 1095
+  and 730 days (pending legal review).
 
 ## Team progress board
 
@@ -328,12 +328,13 @@ the caller only, sorted by `due_at` (none last), URLs absolute on
 - Quizzes whose attempts this cycle all failed and that have attempts
   left: `info`, no due date.
 
-Auth: this one route uses a separate verifier that also accepts the
-audiences in `OIDC_EXTRA_AUDIENCES` (Den's `den-spa`), with the same issuer
-and signature checks; every `/api/v1` route keeps Learn's own audience.
-Users resolve by issuer + subject as usual; a token without a groups claim
-(Den's id_token) leaves the cached `user_groups` alone. Den's origins must
-be in `CORS_ALLOWED_ORIGINS` (`Authorization` is an allowed header).
+Auth: every `/api/v1` route checks an access token whose audience is
+`learn-api` (`OIDC_AUDIENCE`) and refuses an ID token. This one route uses
+a separate verifier that also accepts the audiences in
+`OIDC_EXTRA_AUDIENCES` (Den's portal, still `den-spa` while Den sends its
+ID token). Users resolve by issuer + subject as usual; a token without a
+groups claim leaves the cached `user_groups` alone. Den's origins must be
+in `CORS_ALLOWED_ORIGINS` (`Authorization` is an allowed header).
 
 ## Question statistics
 

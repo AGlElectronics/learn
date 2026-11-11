@@ -134,17 +134,20 @@ What happens:
 4. `frontend` serves the SPA from nginx on `:3005` and proxies `/api/...`
    + `/livez` + `/readyz` to the backend.
 
-Standalone defaults to `AUTH_MODE=dev`: the SPA sends `X-Dev-User` (pick
-any name on the login screen) and the backend grants the groups from
-`X-Dev-Groups` (default `DEV_DEFAULT_GROUPS=learn-admin`). In the suite
-compose it runs with real OIDC against the shared Keycloak instead.
+The binary defaults to `AUTH_MODE=oidc` and `APP_ENV=production`. Compose
+sets `APP_ENV=development` and `AUTH_MODE=dev`: the SPA sends `X-Dev-User`
+(pick any name on the login screen) and the backend grants the groups from
+`X-Dev-Groups` (default `DEV_DEFAULT_GROUPS=learn-admin`). Dev headers are
+refused unless `APP_ENV=development`. In the suite compose it runs with
+real OIDC against the shared Keycloak; the API accepts access tokens for
+audience `learn-api` and refuses ID tokens.
 
 Health probes:
 
 ```sh
 curl -s http://localhost:8120/livez     # backend direct
 curl -s http://localhost:3005/livez     # through the frontend proxy
-curl -s http://localhost:8120/api/role-catalog
+curl -s http://localhost:8120/api/role-catalog -H "X-Dev-User: dev-admin"
 ```
 
 ## In the suite
