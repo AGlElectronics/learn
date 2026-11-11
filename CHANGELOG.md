@@ -110,6 +110,12 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   `TELEGRAM_BOT_TOKEN`; while it is off, and for people without a chat id, a
   reminder does not count as delivered. `TELEGRAM_API_URL` (default
   `https://api.telegram.org`) points elsewhere for a proxy.
+- Helm chart: `networkPolicy.telegram` (off by default) lets the backend
+  reach the Telegram Bot API, as the `CiliumNetworkPolicy` `learn-telegram`
+  (`fqdns`) or `ipBlock` rules (`cidrs`). `config` now sets
+  `GROUP_DIRECTORY` (`keycloak`; anything but `keycloak` or `off` stops the
+  chart), `LEARN_LINKABLE_GROUPS` (`/learn/*`) and `TELEGRAM_API_URL`, and
+  `existingSecret` must hold `LEARN_FEEDBACK_PEPPER`.
 - GDPR: `POST /api/v1/users/{id}/erase` (and **Settings → Erase a
   person**) anonymises a person; their progress, attempts and certificates
   stay, and certificates keep verifying with the name "Former learner". A
