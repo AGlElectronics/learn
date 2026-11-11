@@ -21,7 +21,7 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 - Qualifications with printable certificates and a public verify code,
   learning paths, reminders, reports and team boards (counts per group,
   never names). Staff roles: `learn-admin`, `learn-trainer`,
-  `learn-coordinator`.
+  `learn-manager`, `learn-coordinator`.
 - HR can require a qualification before it grants a role: it reads the
   qualification catalog and asks for holdings with a shared service token.
   Den's portal shows Learn to-dos.
@@ -72,6 +72,73 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 - CI on every pull request (tests, lint, Trivy scans) and signed images with
   an SBOM published to GHCR on version tags (linux/amd64; linux/arm64
   optional).
+- Training managers (`learn-manager` group, role `training_manager`,
+  permission `staff.manage`) decide who teaches: they add and remove trainers
+  on every course under **Course roles** (`GET /api/v1/course-staff`).
+  Trainers manage learners only. The last trainer of a course can never be
+  removed (`409`).
+- The training office (`learn-coordinator`, permission
+  `qualification.manage`) creates, edits and deletes qualifications, sees
+  every certificate and revokes certificates, on the new **Qualifications**
+  page. Module settings stay with `settings.manage`.
+- Courses can be archived and unarchived (`POST /api/v1/courses/{id}/archive`,
+  `/unarchive`): an archived course is hidden from learners and every list,
+  and read-only for its staff (`409 archived`). Nothing is deleted; there is
+  no course delete.
+- Audit log of enrolments, course roles, publishing, archiving, quiz
+  grading and resets, certificate revokes, qualification changes, group
+  links, session sign-up status, Den pairing, settings and erasure. Admins
+  read it on the **Audit log** page (`GET /api/v1/audit`, `settings.manage`).
+- Group links (courses and learning paths) name a group by its full path
+  (`/learn/cohort-a`) and match the token's groups claim by full path,
+  ignoring case and the leading `/`. Links made by plain name are looked up
+  once at start-up and get their path; a name that is missing or used by
+  several groups is reported on the link. Configure Keycloak's group mapper
+  with **Full group path** on.
+- `LEARN_LINKABLE_GROUPS` (default `/learn/*`): the groups trainers may see
+  and link; course managers may link any group.
+- `GROUP_DIRECTORY` (`keycloak`, the default, or `off`): with `off` Learn
+  never calls the Keycloak Admin API, and the group-link panels warn that
+  members only appear as they sign in.
+- The people picker also finds people in the Keycloak directory who never
+  signed in (enrol them with `directory_id`), and Learn keeps their
+  Keycloak id apart from the token's `sub`: a first sign-in with a different
+  `sub` takes over the synced person by username instead of creating a
+  second one.
+- Telegram reminders are delivered through the Bot API. Admins switch
+  Telegram on and off in **Settings** without removing
+  `TELEGRAM_BOT_TOKEN`; while it is off, and for people without a chat id, a
+  reminder does not count as delivered. `TELEGRAM_API_URL` (default
+  `https://api.telegram.org`) points elsewhere for a proxy.
+- GDPR: `POST /api/v1/users/{id}/erase` (and **Settings → Erase a
+  person**) anonymises a person; their progress, attempts and certificates
+  stay, and certificates keep verifying with the name "Former learner". A
+  retention job anonymises people inactive for `inactive_user_months` and
+  deletes audit entries older than `audit_log_months`. Den's module settings
+  decide the values while paired; standalone, admins set them in
+  **Settings**. The defaults (36 and 24 months) are pending legal review.
+- `monitorSession` in the web app's `/config.json` (default `true`) turns
+  OIDC session monitoring off for identity providers without
+  `check_session_iframe`.
+- Uploads still pending after 24 hours are deleted automatically, hourly.
+
+### Changed
+
+- Quiz reset is `POST /api/v1/activities/{id}/reset` with
+  `{"confirm": "<quiz title>"}` and needs `course.manage`. It deletes the
+  attempts and completions of each learner's current cycle only; earlier
+  cycles and every certificate already issued stay.
+- **BREAKING:** `LEARN_FEEDBACK_PEPPER` is required outside
+  `APP_ENV=development`. Generate it with `openssl rand -hex 32` and store it
+  in `learn-secrets`; see
+  [Secrets](https://aglelectronics.github.io/con-services/operations/secrets/).
+- **BREAKING:** outside `APP_ENV=development` the backend refuses to start
+  when `LEARN_SERVICE_TOKEN` is shorter than 32 characters, has fewer than
+  10 different characters or looks like a placeholder. Generate it with
+  `openssl rand -hex 32` and set the same value on HR.
+- People search (`GET /api/v1/users`) only finds people of the caller's
+  organizations and needs `enrol.manage` or `staff.manage`; trainers see
+  names only, never email addresses (also in enrolment lists).
 
 ### Security
 
@@ -88,3 +155,13 @@ counts rebuilds of the same version. Rebuilds get no entry here.
   scan (Trivy, HIGH and CRITICAL issues that have a fix).
 - A production build never falls back to dev sign-in: a `/config.json`
   without `authMode` means OIDC.
+- Trainers can no longer make other people trainers or remove co-trainers.
+- Uploaded media are checked by their contents (file signature), not only
+  by the type the browser declares; a rejected upload is deleted from
+  storage at once.
+- Rate limits per person on self-enrolment, check-in, feedback and the
+  people search (`429 rate_limited` with `Retry-After`).
+- The anonymous-feedback dedupe hash is an HMAC keyed with a secret
+  (`LEARN_FEEDBACK_PEPPER`) instead of a constant in the code.
+- `.env.example` no longer contains a service token; the dev value stays in
+  `infra/docker-compose.yml` only.

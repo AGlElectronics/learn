@@ -145,13 +145,20 @@ services:
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-}
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+      # keycloak: read groups and people from Keycloak (when KEYCLOAK_* is set); off: never.
+      GROUP_DIRECTORY: ${GROUP_DIRECTORY:-keycloak}
+      # Groups trainers may link; course managers may link any group.
+      LEARN_LINKABLE_GROUPS: ${LEARN_LINKABLE_GROUPS:-/learn/*}
       # Learn's own notices go to Mailpit in dev.
       SMTP_HOST: ${SMTP_HOST:-mailpit}
       SMTP_PORT: "${SMTP_PORT:-1025}"
       SMTP_FROM: ${SMTP_FROM:-no-reply@conservices.local}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Con Services}
-      # Shared secret for HR -> Learn service calls.
+      # Shared secret for HR -> Learn service calls. DEV-ONLY value: outside
+      # APP_ENV=development the backend refuses short or placeholder secrets.
       LEARN_SERVICE_TOKEN: ${LEARN_SERVICE_TOKEN:-learn-service-dev-token}
+      # Keys the anonymous feedback dedupe hash. DEV-ONLY value.
+      LEARN_FEEDBACK_PEPPER: ${LEARN_FEEDBACK_PEPPER:-learn-dev-only-feedback-pepper}
       # Empty = Telegram notifications disabled.
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       # Pairing with Den happens in the app (Settings → Den connection).

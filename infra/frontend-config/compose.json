@@ -4,5 +4,6 @@
   "oidcClientId": "",
   "oidcScope": "openid profile email",
   "apiBaseUrl": "",
-  "productName": "Learn"
+  "productName": "Learn",
+  "monitorSession": true
 }

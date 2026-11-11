@@ -34,16 +34,23 @@ reports. The domain rules live in [docs/domain.md](docs/domain.md).
   QR check-in at the venue, walk-ins, roster with manual attendance.
 - **Rules**: prerequisites between activities, due dates (days after
   enrolment, per-learner override), overdue tracking.
-- **Group sync**: courses and paths linked to Keycloak groups enrol (and
-  deactivate, never delete) members automatically.
-- **Media**: uploads straight to object storage, alt text required for
-  pictures, YouTube/Vimeo embeds, unused-file cleanup by hand.
+- **Group sync**: courses and paths linked to Keycloak groups (by full
+  path) enrol (and deactivate, never delete) members automatically; trainers
+  may only link the groups in `LEARN_LINKABLE_GROUPS`.
+- **Media**: uploads straight to object storage, checked by file contents,
+  alt text required for pictures, YouTube/Vimeo embeds; abandoned uploads
+  are removed after 24 hours.
+- **Archive**: courses are archived (hidden, read-only, reversible), never
+  deleted.
+- **Audit and privacy**: audit log of enrolments, roles, grading, resets,
+  revokes and settings; GDPR erasure and a retention job (values from Den
+  when paired).
 - **Qualifications**: awarded by finishing a course or a path, expiry and
   renewal cycles, printable certificates with a public QR verify page,
   holdings for Den.
 - **Learning paths**: ordered (optionally sequential) course bundles with
   their own enrolments and qualification.
-- **Engagement**: email reminders (Telegram stub), team progress boards
+- **Engagement**: email and Telegram reminders, team progress boards
   (counts only; teams under 3 people hidden), course and session feedback
   (optionally anonymous), to-dos for Den's portal.
 - **Reports**: completion and qualification status with CSV export.
@@ -61,10 +68,10 @@ Authorization is enforced server-side on every route; see
 | ---- | ------ |
 | Public | `GET /livez`, `/readyz`, `/api/role-catalog`, `/api/qualification-catalog`, `/api/public/verify/{code}`, `/api/brand`; `GET /api/internal/holdings` (service token); `GET /api/portal/todos` (Den portal) |
 | Me | `GET /me`, `GET/PUT /me/preferences` (`theme`, `language`), `GET/PUT /me/channels`, `GET /me/qualifications`, `GET /me/paths`, `GET /me/teams` |
-| Courses | `GET /courses/mine`, `/courses/catalog`, `/courses/teach`; `POST /courses`; `GET/PATCH /courses/{id}` (incl. `languages`, `default_lang`); `POST /courses/{id}/publish`, `/unpublish`, `/copy`, `/enrol`, `/renew`; `GET/POST /courses/{id}/enrolments`; `PATCH/DELETE /enrolments/{id}` |
+| Courses | `GET /courses/mine`, `/courses/catalog`, `/courses/teach` (`?archived=true`); `POST /courses`; `GET/PATCH /courses/{id}` (incl. `languages`, `default_lang`); `POST /courses/{id}/publish`, `/unpublish`, `/archive`, `/unarchive`, `/copy`, `/enrol`, `/renew`; `GET/POST /courses/{id}/enrolments`; `PATCH/DELETE /enrolments/{id}`; `GET /course-staff` |
 | Content | `POST /courses/{id}/sections`; `PATCH/DELETE /sections/{id}`; `POST /sections/{id}/activities`; `PATCH/DELETE /activities/{id}`; `PUT /activities/{id}/completion`, `/prerequisites` |
 | Translations | `GET/PUT /courses/{id}/translations?lang=`, `/qualifications/{id}/translations?lang=`, `/paths/{id}/translations?lang=` |
-| Quizzes | `GET/POST /courses/{id}/question-categories`; `PATCH/DELETE /question-categories/{id}`; `GET/POST /question-categories/{id}/questions`; `PATCH/DELETE /questions/{id}`; `PUT /questions/{id}/regions`; `POST /questions/{id}/options`; `PATCH/DELETE /options/{id}`; `GET/POST /activities/{id}/slots`; `PATCH/DELETE /slots/{id}`; `GET /activities/{id}/quiz`; `POST/DELETE /activities/{id}/attempts`; `GET /attempts/{id}`; `POST /attempts/{id}/submit`; `GET /courses/{id}/gradebook`, `/question-stats`; `POST /courses/{id}/question-import?step=preview/commit`; `GET /question-import/csv-template` |
+| Quizzes | `GET/POST /courses/{id}/question-categories`; `PATCH/DELETE /question-categories/{id}`; `GET/POST /question-categories/{id}/questions`; `PATCH/DELETE /questions/{id}`; `PUT /questions/{id}/regions`; `POST /questions/{id}/options`; `PATCH/DELETE /options/{id}`; `GET/POST /activities/{id}/slots`; `PATCH/DELETE /slots/{id}`; `GET /activities/{id}/quiz`; `POST /activities/{id}/attempts`, `/reset`; `GET /attempts/{id}`; `POST /attempts/{id}/submit`; `GET /courses/{id}/gradebook`, `/question-stats`; `POST /courses/{id}/question-import?step=preview/commit`; `GET /question-import/csv-template` |
 | Sessions | `GET /activities/{id}/session`; `POST /activities/{id}/session-slots`; `PATCH/DELETE /session-slots/{id}`; `POST/DELETE /slots/{id}/booking`; `GET /slots/{id}/checkin-code`, `/roster`; `POST /slots/{id}/checkin`; `PUT /signups/{id}` |
 | Media | `GET /courses/{id}/media`; `POST /courses/{id}/media/uploads`; `POST /media/{id}/complete`; `GET/PATCH/DELETE /media/{id}`; `GET /media/{id}/url`; `GET/POST /activities/{id}/media`; `PATCH/DELETE /activity-media/{id}` |
 | Groups | `GET /groups`; `GET/POST/DELETE /courses/{id}/group-links`, `POST …/group-links/sync` (same under `/paths/{id}`) |
@@ -72,7 +79,7 @@ Authorization is enforced server-side on every route; see
 | Paths | `GET/POST /paths`; `GET/PATCH/DELETE /paths/{id}`; `PUT/POST /paths/{id}/courses`; `DELETE /paths/{id}/courses/{course}`; `GET/POST /paths/{id}/enrolments`; `POST /paths/{id}/enrol`; `DELETE /path-enrolments/{id}` |
 | Engagement | `GET /courses/{id}/team-board`, `GET/PUT …/team-board/settings` (same under `/qualifications/{id}`); `GET /courses/{id}/feedback`, `/feedback/mine`; `POST /courses/{id}/feedback`; `PUT /courses/{id}/feedback-settings`; `POST /reminders/run` |
 | Reports | `GET /reports/scope`, `/reports/completion`, `/reports/qualifications` (`&format=csv`) |
-| Admin | `GET /users`; Den link under `/den` (`GET /`, `POST /pair`, `POST /sync`, `DELETE /pair`) |
+| Admin | `GET /users`; `POST /users/{id}/erase`; `GET/PUT /settings`; `GET /audit`; Den link under `/den` (`GET /`, `POST /pair`, `POST /sync`, `DELETE /pair`) |
 
 ## Reserved ports
 
@@ -92,11 +99,12 @@ with stash (8088/3000), den (8090/3001), events (8100/3002) and hr
 Roles come from IdP groups via `infra/access-config.toml`, checked on every
 request:
 
-| Keycloak group  | Role                 | May do                                            |
-| --------------- | -------------------- | ------------------------------------------------- |
-| `learn-admin`   | `organization_admin` | Everything: every course, enrolments, settings.   |
-| `learn-trainer` | `trainer`            | Create courses; edit/enrol on courses they staff. |
-| `learn-coordinator` | `coordinator`    | Read every report.                                |
+| Keycloak group      | Role                 | May do                                                        |
+| ------------------- | -------------------- | ------------------------------------------------------------- |
+| `learn-admin`       | `organization_admin` | Everything: every course, enrolments, settings, audit log.    |
+| `learn-trainer`     | `trainer`            | Create courses; edit them and manage their learners.          |
+| `learn-manager`     | `training_manager`   | Add and remove trainers on every course (never the last one). |
+| `learn-coordinator` | `coordinator`        | Read every report; manage qualifications and certificates.    |
 
 **There is no learner group.** Reading a published course requires an
 *enrolment* (created by course staff, or by the person themselves when the
@@ -148,7 +156,8 @@ docker compose --profile den --profile events --profile learn up --build -d
 ```
 
 Learn then runs with OIDC against the shared Keycloak (`learn-spa` client,
-groups `learn-admin` / `learn-trainer`), its own `learn` database on the
+groups `learn-admin` / `learn-trainer` / `learn-manager` /
+`learn-coordinator`), its own `learn` database on the
 shared Postgres, and https://learn.conservices.test behind the proxy. Pair
 it with Den under **Settings → Den connection** (mint the URL in Den admin
 → Modules), same as HR, Stash and Rally.
@@ -211,9 +220,12 @@ Tests are skipped when `TEST_DATABASE_URL` is unset. Each run migrates the
 test database from scratch (drop + recreate the schema), so point it at a
 **disposable** database, never a real one.
 
-Frontend: `npm run typecheck`, `npm test` (vitest; checks the English and
-Dutch message files match) and `npm run build`.
+Frontend: `npm run lint` (ESLint 9, `eslint.config.js`), `npm run
+typecheck`, `npm test` (Vitest: unit tests in Node, component tests in
+jsdom; also checks the English and Dutch message files match) and `npm run
+build`.
 
 From the suite root, `scripts/smoke-learn.ps1` runs the whole loop against
 the live stack: create course → add content → publish → enrol → complete →
-check progress, including the negative authorization checks.
+check progress, then quizzes, media, sessions with check-in and
+certificates, including the negative authorization checks.

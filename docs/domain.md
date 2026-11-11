@@ -34,14 +34,24 @@ den_link    (Den pairing, same as every module)
 Two layers, both enforced server-side on every request:
 
 - **Permissions** come from IdP groups through `infra/access-config.toml`
-  (same mechanism as Rally). `organization_admin` holds `course.manage`,
-  `enrol.manage`, `settings.manage`; `trainer` holds `course.teach`,
-  `enrol.manage`. `organization_admin` and `coordinator` (group
-  `learn-coordinator`) hold `report.view`. Permissions are org-scoped; the
-  owning organization is always resolved from the resource row.
+  (same mechanism as Rally). `organization_admin` holds every permission;
+  `trainer` holds `course.teach`, `enrol.manage`; `training_manager` (group
+  `learn-manager`) holds `staff.manage`; `coordinator` (group
+  `learn-coordinator`) holds `report.view` and `qualification.manage`.
+  Permissions are org-scoped; the owning organization is always resolved
+  from the resource row.
 - **Course staffing** is an enrolment with role `trainer`. `course.teach`
   only has effect on courses the holder staffs; `course.manage` works
-  everywhere.
+  everywhere. `enrol.manage` adds and removes learners only; adding or
+  removing a trainer needs `staff.manage`, and the last active trainer of a
+  course is never removed (409). See ADR 0003.
+- **People** belong to an organization (`user_organizations`) once they
+  sign in to it or are enrolled on one of its courses. The picker
+  (`GET /users`) only finds people of the caller's organizations; emails
+  show only to `course.manage` and `staff.manage` holders.
+- **Archived courses** (`archived_at`) are hidden from learners and every
+  course list and read-only for staff (409 `archived` on anything but GET).
+  Unarchiving restores them; courses are never deleted.
 
 Visibility rules:
 
@@ -83,8 +93,11 @@ quiz_attempts 1─n quiz_attempt_questions (frozen question + option order, chos
   quizzes. The grade is the best submitted attempt.
 - **Edit lock**: once a question appears in a submitted attempt, its
   options and kind are locked (409); prompt, feedback and points stay
-  editable. Staff can reset a quiz, which deletes its attempts and
-  completions and unlocks the questions.
+  editable. A course manager can reset a quiz
+  (`POST /activities/{id}/reset {"confirm": "<title>"}`), which deletes the
+  attempts and completions of each person's current cycle (and open
+  attempts); earlier cycles and certificates stay, so questions those
+  attempts used stay locked. Resets are audited.
 - **Gradebook** (`GET /courses/{id}/gradebook`, staff): learner enrolments
   × quizzes with best %, passed and submitted attempt count.
 
@@ -115,9 +128,21 @@ session_slots 1─n session_signups (user, status booked|waitlist|attended|no_sh
 
 ## Group sync
 
-Courses can be linked to Keycloak groups (`course_group_links`); members
-are enrolled as learners. Enrolments carry `source` (manual|group) and
-`status` (active|inactive).
+Courses can be linked to Keycloak groups (`course_group_links`) by full
+path; members are enrolled as learners. Enrolments carry `source`
+(manual|group) and `status` (active|inactive).
+
+- Every stored group value (`group_name` in links, `user_groups`, team
+  boards) and the token's groups claim are compared in one form: trimmed,
+  one leading `/` dropped, lower-case, full path. `group_path` keeps the
+  directory's spelling. Old name-only links (`path_resolved = false`) are
+  resolved once at start-up. See ADR 0002.
+- Trainers may only list and link groups matching `LEARN_LINKABLE_GROUPS`;
+  `course.manage` links any group. `GROUP_DIRECTORY=off` never calls
+  Keycloak.
+- Synced people keep their Keycloak id in `users.idp_user_id`. A first
+  sign-in whose `sub` differs takes over a never-signed-in synced row with
+  the same `preferred_username`.
 
 - Sync only touches `source='group'` rows. Leaving every linked group sets
   `status='inactive'` and `left_group_at`; nothing is deleted and progress
@@ -143,11 +168,13 @@ activities(kind='page') 1─n activity_media (media_id XOR external_url, caption
 - **Upload**: `POST /courses/{id}/media/uploads` checks type and size
   (images 10 MB, audio 20 MB, video 200 MB), records a `pending` row and
   returns a presigned POST; the browser uploads straight to object storage
-  and calls `POST /media/{id}/complete`, which stats the object and marks
-  it `ready`. Without storage configured these answer 503.
-- **Nothing is deleted automatically.** `GET /courses/{id}/media?filter=unused`
-  lists files no content uses, including uploads pending for over a day
-  (`upload_unfinished`); staff delete them by hand (`DELETE /media/{id}`,
+  and calls `POST /media/{id}/complete`, which stats the object, checks its
+  first bytes are really the announced type, and marks it `ready`. A file
+  that fails a check is deleted (object and row, 422). Without storage
+  configured these answer 503.
+- **Cleanup**: uploads still `pending` after 24 hours are deleted by an
+  hourly sweeper. `GET /courses/{id}/media?filter=unused` lists files no
+  content uses; staff delete ready files by hand (`DELETE /media/{id}`,
   409 while in use). Course copies share stored objects (`object_key` is
   not unique); the object is removed only when no other row uses the key.
 - **Viewing**: `GET /media/{id}/url` answers a 5-minute presigned link (the
@@ -201,7 +228,7 @@ certificates (user, qualification, course, cycle, issued_at, expires_at,
               verify_code, revoked_at/reason/by; unique course+user+cycle)
 ```
 
-- Qualification CRUD needs `settings.manage` (deleting one with issued
+- Qualification CRUD needs `qualification.manage` (deleting one with issued
   certificates answers 409). Course staff pick the awarded qualification
   with `PUT /courses/{id}/qualification {qualification_id | null}`;
   linking awards learners who already finished.
@@ -213,7 +240,7 @@ certificates (user, qualification, course, cycle, issued_at, expires_at,
   any time after it (or after a revoke) and bumps the cycle; older
   completions and certificates are kept as history. Nothing is deleted
   automatically.
-- `POST /certificates/{id}/revoke {reason}` needs `settings.manage`.
+- `POST /certificates/{id}/revoke {reason}` needs `qualification.manage`.
   `GET /certificates/{id}` is for the holder or staff; the SPA prints it at
   `/certificates/{id}` with a QR code to `${PUBLIC_BASE_URL}/verify/<code>`.
 - `GET /api/public/verify/{code}` (no auth, ~30 requests/min per IP)
@@ -231,14 +258,35 @@ overdue (once), session tomorrow, certificate expiring in 30 days and
 certificate expired (once). `reminders_sent` makes each reminder go out
 once (a failed delivery is retried next run); a Postgres advisory lock
 keeps replicas from double-sending. `user_channels` holds extra notifier
-addresses. Without SMTP configured the worker does nothing.
+addresses. Without SMTP or Telegram configured the worker does nothing.
 
 Reminders go through `internal/notify`: every enabled channel (email when
-`SMTP_HOST` is set, the Telegram stub when `TELEGRAM_BOT_TOKEN` is) gets
-each notice with the recipient's `user_channels` addresses; a reminder
-counts as sent when at least one channel delivered it. People save their
-Telegram chat id with `GET|PUT /me/channels {telegram_chat_id}` (the
-Notifications card on My courses); Telegram itself only logs for now.
+`SMTP_HOST` is set, Telegram when `TELEGRAM_BOT_TOKEN` is) gets each notice
+with the recipient's `user_channels` addresses; a reminder counts as sent
+when at least one channel really delivered it. People save their Telegram
+chat id with `GET|PUT /me/channels {telegram_chat_id}` (the Notifications
+card on My courses); Telegram sends with the Bot API's `sendMessage`. The
+module setting `telegram_enabled` (`PUT /settings`) switches Telegram off
+without removing the token; skipped channels never count as delivered.
+
+## Audit log and privacy
+
+- `audit_log` records who did what (enrolments, course roles, publish,
+  archive, quiz grading and resets, revokes, qualification changes, group
+  links, sign-up status, Den pairing, settings, erasure). Details hold ids,
+  never names or emails. `GET /audit` needs `settings.manage`.
+- `POST /users/{id}/erase {"confirm": "ERASE"}` anonymises a person: name
+  "Former learner", no email, subject `erased:<id>`, IdP ids, language,
+  group cache, channels and organization rows removed, feedback detached.
+  Enrolments, attempts, attendance and certificates stay; certificates
+  keep verifying. Their audit entries keep the action with the actor name
+  "Erased user".
+- A retention job (every six hours, advisory lock) anonymises people
+  without a sign-in or group sync for `inactive_user_months` and deletes
+  audit entries older than `audit_log_months` (0 = never). Den's module
+  settings (`settings.data.retention` in the integration bundle) decide
+  while paired; otherwise `module_settings`, otherwise 36 and 24 months
+  (pending legal review).
 
 ## Team progress board
 
@@ -382,7 +430,7 @@ translations (entity_type, entity_id, field, lang, text; PK of the first four)
   default text, translation and a `missing` flag; `PUT` with
   `{translations: [{entity_type, entity_id, field, text}]}` upserts in bulk
   (empty text deletes; fields outside the course answer 422). The same pair
-  exists for `/qualifications/{id}` (`settings.manage`) and `/paths/{id}`
+  exists for `/qualifications/{id}` (`qualification.manage`) and `/paths/{id}`
   (`course.manage`).
 - The SPA ships English and Dutch UI text (`src/i18n`); the switcher saves
   the choice to the preference and to localStorage (used on signed-out
