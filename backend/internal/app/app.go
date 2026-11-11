@@ -130,6 +130,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	case fileClient != nil:
 		store = fileClient
 		logger.Info().Str("bucket", fileClient.Bucket()).Msg("object storage ready")
+		go learn.NewMediaService(learn.NewService(pool), store).RunSweeper(ctx, logger)
 	default:
 		logger.Info().Msg("S3_ENDPOINT not set; media uploads disabled")
 	}

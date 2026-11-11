@@ -21,12 +21,15 @@ import (
 )
 
 type fakeStore struct {
-	mu      sync.Mutex
-	objects map[string]files.ObjectInfo
-	removed []string
+	mu       sync.Mutex
+	objects  map[string]files.ObjectInfo
+	contents map[string][]byte
+	removed  []string
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{objects: map[string]files.ObjectInfo{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{objects: map[string]files.ObjectInfo{}, contents: map[string][]byte{}}
+}
 
 func (f *fakeStore) PresignedPost(_ context.Context, key, contentType string, maxBytes int64, _ time.Duration) (string, map[string]string, error) {
 	return "https://s3.test/learn-data-dev", map[string]string{"key": key, "Content-Type": contentType}, nil
@@ -44,6 +47,42 @@ func (f *fakeStore) Stat(_ context.Context, key string) (files.ObjectInfo, error
 		return files.ObjectInfo{}, errors.New("no such key")
 	}
 	return info, nil
+}
+
+// ReadHead returns the start of a real file of the stored type, unless
+// putBytes stored other contents.
+func (f *fakeStore) ReadHead(_ context.Context, key string, n int64) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	info, ok := f.objects[key]
+	if !ok {
+		return nil, errors.New("no such key")
+	}
+	data, ok := f.contents[key]
+	if !ok {
+		data = []byte(magicFor[info.ContentType])
+	}
+	if int64(len(data)) > n {
+		data = data[:n]
+	}
+	return data, nil
+}
+
+// magicFor is the start of a real file of each type the tests upload.
+var magicFor = map[string]string{
+	"image/png":  "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+	"image/jpeg": "\xff\xd8\xff\xe0\x00\x10JFIF",
+	"audio/mpeg": "ID3\x04\x00\x00\x00\x00\x00\x00",
+	"video/mp4":  "\x00\x00\x00\x18ftypmp42",
+	"video/webm": "\x1a\x45\xdf\xa3\x9f\x42\x86\x81",
+}
+
+// putBytes uploads an object with the given contents.
+func (f *fakeStore) putBytes(key, contentType string, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.objects[key] = files.ObjectInfo{Size: int64(len(data)), ContentType: contentType}
+	f.contents[key] = data
 }
 
 func (f *fakeStore) Remove(_ context.Context, key string) error {
@@ -189,9 +228,29 @@ func TestMediaAndHotspots(t *testing.T) {
 		id := str(obj(ticket["media"]), "id")
 		code, _ = call(t, h, trainerA, "POST", "/api/v1/media/"+id+"/complete", nil)
 		mustStatus(t, code, 409, "complete before the object arrived")
-		store.put(str(obj(ticket["fields"]), "key"), "image/gif", 100)
+		key := str(obj(ticket["fields"]), "key")
+		store.put(key, "image/gif", 100)
 		code, _ = call(t, h, trainerA, "POST", "/api/v1/media/"+id+"/complete", nil)
 		mustStatus(t, code, 422, "stored type differs from the announced one")
+		code, _ = call(t, h, trainerA, "GET", "/api/v1/media/"+id+"/url", nil)
+		mustStatus(t, code, 404, "a rejected upload is deleted")
+		if _, err := store.Stat(context.Background(), key); err == nil {
+			t.Fatal("the rejected object should be removed from storage")
+		}
+
+		code, ticket = call(t, h, trainerA, "POST", "/api/v1/courses/"+courseID+"/media/uploads",
+			map[string]any{"filename": "fake.png", "content_type": "image/png", "size_bytes": 100})
+		mustStatus(t, code, 201, "ticket for a disguised file")
+		id, key = str(obj(ticket["media"]), "id"), str(obj(ticket["fields"]), "key")
+		store.putBytes(key, "image/png", []byte("<html><script>alert(1)</script></html>"))
+		code, out := call(t, h, trainerA, "POST", "/api/v1/media/"+id+"/complete", nil)
+		mustStatus(t, code, 422, "contents are not a PNG")
+		if !strings.Contains(str(obj(out["error"]), "message"), "not a image/png file") {
+			t.Fatalf("magic-byte rejection: %v", out)
+		}
+		if _, err := store.Stat(context.Background(), key); err == nil {
+			t.Fatal("the disguised object should be removed from storage")
+		}
 	})
 
 	t.Run("images need alt text before attaching", func(t *testing.T) {
@@ -255,8 +314,8 @@ func TestMediaAndHotspots(t *testing.T) {
 				t.Fatalf("media in use listed as unused: %v", m)
 			}
 		}
-		if len(arr(lib, "media")) != 2 { // the 150 MB video ticket + the wrong-type upload, both pending
-			t.Fatalf("unused library: got %d, want 2: %v", len(arr(lib, "media")), lib)
+		if len(arr(lib, "media")) != 1 { // the 150 MB video ticket, pending; rejected uploads are gone
+			t.Fatalf("unused library: got %d, want 1: %v", len(arr(lib, "media")), lib)
 		}
 		pending := str(obj(arr(lib, "media")[0]), "id")
 		if obj(arr(lib, "media")[0])["upload_unfinished"] != false {

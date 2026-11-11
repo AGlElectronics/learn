@@ -200,6 +200,25 @@ func (c *Client) GetObject(ctx context.Context, key string) (io.ReadCloser, erro
 	return obj, nil
 }
 
+// ReadHead returns up to the first n bytes of an object (for file-type
+// checks).
+func (c *Client) ReadHead(ctx context.Context, key string, n int64) ([]byte, error) {
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(0, n-1); err != nil {
+		return nil, err
+	}
+	obj, err := c.mc.GetObject(ctx, c.bucket, key, opts)
+	if err != nil {
+		return nil, fmt.Errorf("get object: %w", err)
+	}
+	defer obj.Close()
+	data, err := io.ReadAll(io.LimitReader(obj, n))
+	if err != nil {
+		return nil, fmt.Errorf("read object: %w", err)
+	}
+	return data, nil
+}
+
 // Remove deletes an object. Called when a file metadata row is deleted.
 func (c *Client) Remove(ctx context.Context, key string) error {
 	return c.mc.RemoveObject(ctx, c.bucket, key, minio.RemoveObjectOptions{})

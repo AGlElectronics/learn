@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog"
 
 	"github.com/AGlElectronics/learn/backend/internal/db"
 	"github.com/AGlElectronics/learn/backend/internal/domain"
@@ -33,7 +34,39 @@ type ObjectStore interface {
 	PresignedPost(ctx context.Context, key, contentType string, maxBytes int64, expiry time.Duration) (string, map[string]string, error)
 	PresignedGet(ctx context.Context, key string, expiry time.Duration) (string, error)
 	Stat(ctx context.Context, key string) (files.ObjectInfo, error)
+	// ReadHead returns up to the first n bytes of an object.
+	ReadHead(ctx context.Context, key string, n int64) ([]byte, error)
 	Remove(ctx context.Context, key string) error
+}
+
+// sniffBytes is how much of an upload is read to check its file type.
+const sniffBytes = 16
+
+// magicMatches reports whether head starts like a file of content type ct.
+// The browser declares the type; this checks the bytes really are one.
+func magicMatches(ct string, head []byte) bool {
+	has := func(off int, sig string) bool {
+		return len(head) >= off+len(sig) && string(head[off:off+len(sig)]) == sig
+	}
+	switch ct {
+	case "image/png":
+		return has(0, "\x89PNG\r\n\x1a\n")
+	case "image/jpeg":
+		return has(0, "\xff\xd8\xff")
+	case "image/gif":
+		return has(0, "GIF87a") || has(0, "GIF89a")
+	case "image/webp":
+		return has(0, "RIFF") && has(8, "WEBP")
+	case "audio/mpeg", "audio/mp3":
+		return has(0, "ID3") || (len(head) >= 2 && head[0] == 0xff && head[1]&0xe0 == 0xe0)
+	case "audio/mp4", "audio/x-m4a", "audio/m4a", "video/mp4":
+		return has(4, "ftyp")
+	case "audio/ogg":
+		return has(0, "OggS")
+	case "video/webm":
+		return has(0, "\x1a\x45\xdf\xa3")
+	}
+	return false
 }
 
 // mediaTypes maps every accepted content type to its media kind.
@@ -237,9 +270,10 @@ func (s *MediaService) StartUpload(ctx context.Context, courseID, userID uuid.UU
 	return UploadTicket{Media: m, URL: postURL, Fields: fields, ExpiresAt: s.now().Add(mediaUploadExpiry)}, nil
 }
 
-// CompleteUpload confirms the object arrived with an allowed size and the
-// announced type, then marks the row ready. Completing twice is harmless.
-// A file that fails the check stays pending for staff to delete.
+// CompleteUpload confirms the object arrived with an allowed size, the
+// announced type and file contents that really are that type, then marks
+// the row ready. Completing twice is harmless. A file that fails a check is
+// deleted from storage and the library at once.
 func (s *MediaService) CompleteUpload(ctx context.Context, id uuid.UUID) (Media, error) {
 	if err := s.requireStore(); err != nil {
 		return Media{}, err
@@ -261,16 +295,112 @@ func (s *MediaService) CompleteUpload(ctx context.Context, id uuid.UUID) (Media,
 		return Media{}, httperror.Conflict("the file hasn't arrived in storage yet; upload it first")
 	}
 	if info.Size <= 0 || info.Size > mediaMaxBytes[kind] {
-		return Media{}, httperror.Validation("the stored file is empty or too large", nil)
+		return Media{}, s.reject(ctx, id, key, "the file is empty or too large")
 	}
 	if got, _, _ := mime.ParseMediaType(info.ContentType); !strings.EqualFold(got, ct) {
-		return Media{}, httperror.Validation("the stored file's type does not match the announced type", nil)
+		return Media{}, s.reject(ctx, id, key, "the stored file's type does not match the announced type")
+	}
+	head, err := s.store.ReadHead(ctx, key, sniffBytes)
+	if err != nil {
+		return Media{}, httperror.Internal(err)
+	}
+	if !magicMatches(ct, head) {
+		return Media{}, s.reject(ctx, id, key, "the file's contents are not a "+ct+" file")
 	}
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE media SET status = 'ready', size_bytes = $2, updated_at = now() WHERE id = $1`, id, info.Size); err != nil {
 		return Media{}, err
 	}
 	return s.GetMedia(ctx, id)
+}
+
+// reject deletes a pending upload that failed a check (object and row) and
+// returns the 422 to show. A failed delete is reported as such; the
+// sweeper removes the leftovers later.
+func (s *MediaService) reject(ctx context.Context, id uuid.UUID, key, why string) error {
+	if err := s.removePending(ctx, id, key); err != nil {
+		return httperror.Internal(fmt.Errorf("remove rejected upload: %w", err))
+	}
+	return httperror.Validation(why+"; the upload was removed, upload the file again", nil)
+}
+
+// removePending deletes a pending media row and its object, unless another
+// row (a copied course) still points at the object.
+func (s *MediaService) removePending(ctx context.Context, id uuid.UUID, key string) error {
+	var shared bool
+	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "learn-media-object:"+key); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM media WHERE id = $1 AND status = 'pending'`, id); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM media WHERE object_key = $1)`, key).Scan(&shared)
+	})
+	if err != nil || shared {
+		return err
+	}
+	return s.store.Remove(ctx, key)
+}
+
+// SweepPending deletes uploads still pending after olderThan: the browser
+// never finished them (or never confirmed them). Returns how many went.
+func (s *MediaService) SweepPending(ctx context.Context, olderThan time.Duration) (int, error) {
+	if s.store == nil {
+		return 0, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, object_key FROM media
+		 WHERE status = 'pending' AND created_at < $1
+		 ORDER BY created_at LIMIT 500`, s.now().Add(-olderThan))
+	if err != nil {
+		return 0, err
+	}
+	type pending struct {
+		id  uuid.UUID
+		key string
+	}
+	list, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (pending, error) {
+		var p pending
+		err := row.Scan(&p.id, &p.key)
+		return p, err
+	})
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, p := range list {
+		if err := s.removePending(ctx, p.id, p.key); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// RunSweeper removes abandoned pending uploads hourly until ctx ends; only
+// one replica sweeps at a time.
+func (s *MediaService) RunSweeper(ctx context.Context, logger zerolog.Logger) {
+	log := logger.With().Str("component", "media_sweeper").Logger()
+	t := time.NewTimer(2 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			n, err := withJobLock(ctx, s.pool, "learn-media-sweeper", func() (int, error) {
+				return s.SweepPending(ctx, mediaStaleAfter)
+			})
+			switch {
+			case err != nil:
+				log.Error().Err(err).Msg("sweeping abandoned uploads failed")
+			case n > 0:
+				log.Info().Int("removed", n).Msg("abandoned uploads removed")
+			}
+			t.Reset(time.Hour)
+		}
+	}
 }
 
 // UpdateMedia edits alt text and the staff-facing name. An image that is in
