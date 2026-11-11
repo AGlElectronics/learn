@@ -269,7 +269,7 @@
   "notify.emailOff": "not set up on this server",
   "notify.telegramId": "Telegram chat id",
   "notify.telegramPlaceholder": "e.g. 123456789",
-  "notify.telegramHint": "Telegram notifications are coming soon. You can save your chat id now and reminders will reach you there once they are switched on.",
+  "notify.telegramHint": "To get reminders on Telegram, start a chat with the organisation’s bot (send it /start), then enter your chat id here.",
 
   "teach.homeDescription": "Courses you run. New courses start unpublished.",
   "teach.published": "Published",
@@ -308,7 +308,7 @@
   "teach.confirmDeletePage": "Delete page \"{title}\"?",
 
   "people.title": "People",
-  "people.description": "Everyone on this course. Only people who have signed in to Learn at least once can be added.",
+  "people.description": "Everyone on this course. You can add people of your organisation who have signed in to Learn, or who are in the directory.",
   "people.loadError": "Could not load enrolments.",
   "people.done": "{done}/{total} done",
   "people.synced": "Synced from group",
@@ -316,8 +316,8 @@
   "people.inactive": "Inactive — left group",
   "people.confirmRemove": "Remove {name} from this course?",
   "people.add": "Add a person",
-  "people.searchPlaceholder": "Search by name or email…",
-  "people.noMatch": "No matching people (they must sign in once first).",
+  "people.searchPlaceholder": "Search by name…",
+  "people.noMatch": "No matching people in your organisation.",
 
   "tr.title": "Translations",
   "tr.description": "Offer the course in more languages. Learners see their language when it is offered; anything not translated yet shows in the language the course is written in.",

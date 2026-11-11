@@ -269,7 +269,7 @@
   "notify.emailOff": "niet ingesteld op deze server",
   "notify.telegramId": "Telegram-chat-id",
   "notify.telegramPlaceholder": "bijv. 123456789",
-  "notify.telegramHint": "Telegram-meldingen komen binnenkort. Je kunt je chat-id nu al opslaan; herinneringen komen daar binnen zodra ze aanstaan.",
+  "notify.telegramHint": "Wil je herinneringen via Telegram? Start een chat met de bot van de organisatie (stuur /start) en vul hier je chat-id in.",
 
   "teach.homeDescription": "Cursussen die jij geeft. Nieuwe cursussen zijn eerst niet gepubliceerd.",
   "teach.published": "Gepubliceerd",
@@ -308,7 +308,7 @@
   "teach.confirmDeletePage": "Pagina \"{title}\" verwijderen?",
 
   "people.title": "Mensen",
-  "people.description": "Iedereen in deze cursus. Alleen mensen die minstens één keer bij Learn zijn ingelogd, kunnen worden toegevoegd.",
+  "people.description": "Iedereen in deze cursus. Je kunt mensen uit je organisatie toevoegen die bij Learn zijn ingelogd of in de groepenlijst staan.",
   "people.loadError": "Inschrijvingen konden niet worden geladen.",
   "people.done": "{done}/{total} klaar",
   "people.synced": "Gesynchroniseerd uit groep",
@@ -316,8 +316,8 @@
   "people.inactive": "Inactief — groep verlaten",
   "people.confirmRemove": "{name} uit deze cursus verwijderen?",
   "people.add": "Iemand toevoegen",
-  "people.searchPlaceholder": "Zoek op naam of e-mail…",
-  "people.noMatch": "Niemand gevonden (mensen moeten eerst één keer inloggen).",
+  "people.searchPlaceholder": "Zoek op naam…",
+  "people.noMatch": "Niemand gevonden in je organisatie.",
 
   "tr.title": "Vertalingen",
   "tr.description": "Bied de cursus in meer talen aan. Cursisten zien hun eigen taal als die wordt aangeboden; wat nog niet vertaald is, verschijnt in de taal waarin de cursus is geschreven.",
