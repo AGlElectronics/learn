@@ -219,9 +219,11 @@ cd learn/backend
 TEST_DATABASE_URL='postgres://learn:learn@localhost:5437/learn_test?sslmode=disable' go test -p 1 ./...
 ```
 
-Tests are skipped when `TEST_DATABASE_URL` is unset. Each run migrates the
-test database from scratch (drop + recreate the schema), so point it at a
-**disposable** database, never a real one.
+Tests are skipped when `TEST_DATABASE_URL` is unset. Each package migrates
+that database once (drop and recreate the schema) and every test then
+empties the tables, so point it at a **disposable** database, never a real
+one. Rebuilding the schema before every test is what pushed `go test` past
+its 10 minute limit on the CI runner.
 
 Frontend: `npm run lint` (ESLint 9, `eslint.config.js`), `npm run
 typecheck`, `npm test` (Vitest: unit tests in Node, component tests in

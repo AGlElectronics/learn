@@ -3,64 +3,30 @@ package denlink_test
 // Learn's own test of the shared denlink copy: Pair, Sync, Unpair,
 // preferences and the revoked state against a fake Den and Learn's real
 // migrations (so a missing den_link column fails here). They run only when
-// TEST_DATABASE_URL is set and MIGRATE THE DATABASE FROM SCRATCH (drop and
-// recreate the public schema): point it at a disposable database.
+// TEST_DATABASE_URL is set. The package migrates that database once and
+// each test empties the tables: point it at a disposable database.
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 	"github.com/rs/zerolog"
 
-	"github.com/AGlElectronics/learn/backend/internal/db"
 	"github.com/AGlElectronics/learn/backend/internal/denlink"
-	"github.com/AGlElectronics/learn/backend/migrations"
+	"github.com/AGlElectronics/learn/backend/internal/testdb"
 )
 
 func learnPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping DB-backed tests")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	t.Cleanup(cancel)
-	sqlDB, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	if _, err := sqlDB.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
-		t.Fatal(err)
-	}
-	goose.SetBaseFS(migrations.FS)
-	goose.SetTableName("goose_db_version")
-	goose.SetLogger(goose.NopLogger())
-	if err := goose.SetDialect("postgres"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpContext(ctx, sqlDB, "."); err != nil {
-		t.Fatal(err)
-	}
-	pool, err := db.Open(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return testdb.Open(t)
 }
 
 // learnDen redeems one pairing token and serves the bundle, a logo and

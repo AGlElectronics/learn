@@ -2,9 +2,9 @@ package http_test
 
 // Authorization and progress tests against a real PostgreSQL.
 //
-// They run only when TEST_DATABASE_URL is set and MIGRATE THE DATABASE FROM
-// SCRATCH (drop + recreate the public schema), so point it at a disposable
-// database, never a real one:
+// They run only when TEST_DATABASE_URL is set. The package migrates that
+// database once and each test empties the tables, so point it at a
+// disposable database, never a real one:
 //
 //	TEST_DATABASE_URL='postgres://learn:learn@localhost:5432/learn_test?sslmode=disable' go test ./...
 //
@@ -14,27 +14,21 @@ package http_test
 
 import (
 	"bytes"
-	"context"
-	"database/sql"
 	"encoding/json"
 	nethttp "net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 	"github.com/rs/zerolog"
 
 	"github.com/AGlElectronics/learn/backend/internal/auth"
 	"github.com/AGlElectronics/learn/backend/internal/config"
-	"github.com/AGlElectronics/learn/backend/internal/db"
 	httpx "github.com/AGlElectronics/learn/backend/internal/http"
 	"github.com/AGlElectronics/learn/backend/internal/learn"
-	"github.com/AGlElectronics/learn/backend/migrations"
+	"github.com/AGlElectronics/learn/backend/internal/testdb"
 )
 
 const accessConfigTOML = `
@@ -102,38 +96,8 @@ func setupRouterWithFiles(t *testing.T, store learn.ObjectStore) nethttp.Handler
 // none) run after the database is migrated; it also returns the pool.
 func setupRouterWith(t *testing.T, tweak func(*httpx.Deps)) (nethttp.Handler, *pgxpool.Pool) {
 	t.Helper()
+	pool := testdb.Open(t)
 	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping DB-backed tests")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	t.Cleanup(cancel)
-
-	// Fresh schema + migrations on every run.
-	sqlDB, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	if _, err := sqlDB.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	goose.SetBaseFS(migrations.FS)
-	goose.SetTableName("goose_db_version")
-	goose.SetLogger(goose.NopLogger())
-	if err := goose.SetDialect("postgres"); err != nil {
-		t.Fatalf("goose dialect: %v", err)
-	}
-	if err := goose.UpContext(ctx, sqlDB, "."); err != nil {
-		t.Fatalf("goose up: %v", err)
-	}
-
-	pool, err := db.Open(ctx, dsn)
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
 
 	accessPath := filepath.Join(t.TempDir(), "access-config.toml")
 	if err := os.WriteFile(accessPath, []byte(accessConfigTOML), 0o600); err != nil {
