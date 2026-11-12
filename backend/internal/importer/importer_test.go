@@ -133,7 +133,7 @@ func TestMoodleImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	qs, _, err := ParseMoodleXML(f)
 	if err != nil {
 		t.Fatal(err)

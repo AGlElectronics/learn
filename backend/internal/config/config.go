@@ -302,10 +302,10 @@ func (c *Config) validate(errs []string) error {
 				errs = append(errs, "HR_SERVICE_TOKEN "+err.Error())
 			}
 		}
-		switch {
-		case c.FeedbackPepper == "":
+		switch c.FeedbackPepper {
+		case "":
 			errs = append(errs, "LEARN_FEEDBACK_PEPPER is required outside development (APP_ENV="+c.AppEnv+")")
-		case c.FeedbackPepper == DevFeedbackPepper:
+		case DevFeedbackPepper:
 			errs = append(errs, "LEARN_FEEDBACK_PEPPER is the development value; generate a real one")
 		default:
 			if err := CheckSecret(c.FeedbackPepper); err != nil {

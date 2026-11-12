@@ -331,7 +331,7 @@ func TestChannelsAndReminderRouting(t *testing.T) {
 		if ch["telegram_chat_id"] != "123456789" {
 			t.Fatalf("saved: %v", ch)
 		}
-		code, ch = call(t, h, mo, "PUT", "/api/v1/me/channels", map[string]any{"telegram_chat_id": "42"})
+		code, _ = call(t, h, mo, "PUT", "/api/v1/me/channels", map[string]any{"telegram_chat_id": "42"})
 		mustStatus(t, code, 200, "mo saves")
 		code, ch = call(t, h, mo, "PUT", "/api/v1/me/channels", map[string]any{"telegram_chat_id": ""})
 		mustStatus(t, code, 200, "mo clears")

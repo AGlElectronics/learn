@@ -322,7 +322,7 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("keycloak token: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode >= 300 {
 		return "", fmt.Errorf("keycloak token: status %d: %s", res.StatusCode, truncate(string(body), 300))
@@ -358,7 +358,7 @@ func (c *Client) getJSON(ctx context.Context, token, path string, dest any) erro
 	if err != nil {
 		return fmt.Errorf("keycloak admin GET %s: %w", path, err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode == http.StatusUnauthorized {
 		return fmt.Errorf("%w: GET %s", errUnauthorized, path)

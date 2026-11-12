@@ -69,7 +69,7 @@ func (h *importHandler) importQuestions(w http.ResponseWriter, r *http.Request) 
 		httperror.Render(w, r, httperror.Validation("choose a file to import", nil))
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	data, err := io.ReadAll(io.LimitReader(file, maxImportBytes+1))
 	if err != nil {
 		httperror.Render(w, r, httperror.BadRequest("the file could not be read"))

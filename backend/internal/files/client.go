@@ -211,7 +211,7 @@ func (c *Client) ReadHead(ctx context.Context, key string, n int64) ([]byte, err
 	if err != nil {
 		return nil, fmt.Errorf("get object: %w", err)
 	}
-	defer obj.Close()
+	defer func() { _ = obj.Close() }()
 	data, err := io.ReadAll(io.LimitReader(obj, n))
 	if err != nil {
 		return nil, fmt.Errorf("read object: %w", err)

@@ -233,7 +233,7 @@ func TestTranslations(t *testing.T) {
 
 		code, _ = call(t, h, learner, "PUT", "/api/v1/me/preferences", map[string]any{"language": "not a code"})
 		mustStatus(t, code, 422, "bad language")
-		code, prefs = call(t, h, learner, "PUT", "/api/v1/me/preferences", map[string]any{"language": "nl"})
+		code, _ = call(t, h, learner, "PUT", "/api/v1/me/preferences", map[string]any{"language": "nl"})
 		mustStatus(t, code, 200, "switch to Dutch")
 		code, prefs = call(t, h, learner, "GET", "/api/v1/me/preferences", nil)
 		mustStatus(t, code, 200, "read prefs")

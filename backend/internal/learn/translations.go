@@ -281,7 +281,7 @@ func (s *Service) TranslateDetail(ctx context.Context, d *CourseDetail, langs La
 	if langs == nil {
 		return nil
 	}
-	d.Lang = d.Course.LangFor(langs)
+	d.Lang = d.LangFor(langs)
 	t := s.translator(langs)
 	cid := d.ID
 	t.course(cid, TrCourse, cid, "title", &d.Title)
@@ -334,7 +334,7 @@ func (s *Service) TranslateSummaries(ctx context.Context, list []CourseSummary, 
 	t := s.translator(langs)
 	for i := range list {
 		c := &list[i]
-		c.Lang = c.Course.LangFor(langs)
+		c.Lang = c.LangFor(langs)
 		t.course(c.ID, TrCourse, c.ID, "title", &c.Title)
 		t.course(c.ID, TrCourse, c.ID, "summary", &c.Summary)
 	}
