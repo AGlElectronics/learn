@@ -13,11 +13,11 @@ import (
 
 // People sources for the picker, reported as "source" in GET /users.
 //
-// Learn always searches the people it knows (signed in once, or synced from
-// a group). With the group directory on it also searches the identity
+// Learn searches the people it knows (signed in once, or synced from a
+// group). With the group directory on it also searches the identity
 // provider's directory, so people who never signed in can be picked.
-// TODO(hr-people): when paired with Den, search HR's people instead of the
-// directory once HR offers a people search for modules.
+// HR does not offer a people search for other modules, so a paired Learn
+// still uses this directory.
 const (
 	peopleSourceLearn     = "learn"
 	peopleSourceDirectory = "learn+directory"

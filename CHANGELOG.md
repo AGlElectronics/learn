@@ -131,6 +131,11 @@ counts rebuilds of the same version. Rebuilds get no entry here.
 
 ### Changed
 
+- `GET /api/den/state` and `GET /api/v1/den/state` are documented. Anyone may call them. The body is `mode`, `paired` and `revoked`.
+- The people picker still searches Learn's own people and, when the directory is on, the identity provider. HR has no people search for other modules.
+- CI passes `den-major: "1"`. A release whose MAJOR is not 1 is refused once the shared `ci-v1` tag points at the workflow that has that input.
+- Standalone Compose uses PostgreSQL `postgres:16.15-alpine`.
+- The Helm chart description says CI renders and lints the chart; the first production install is still pending.
 - Quiz reset is `POST /api/v1/activities/{id}/reset` with
   `{"confirm": "<quiz title>"}` and needs `course.manage`. It deletes the
   attempts and completions of each learner's current cycle only; earlier

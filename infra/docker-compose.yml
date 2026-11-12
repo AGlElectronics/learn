@@ -25,7 +25,7 @@ name: learn
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine
     container_name: learn-postgres
     restart: unless-stopped
     environment:

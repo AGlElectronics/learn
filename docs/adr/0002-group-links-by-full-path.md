@@ -35,9 +35,10 @@ ambiguous name stays as it was and the link shows why.
 Trainers may only see and link groups under `LEARN_LINKABLE_GROUPS`
 (default `/learn/*`); course managers may link any group.
 
-The normalising function is local for now
-(`// TODO(shared/groupmatch)`); it moves to the suite's shared `groupmatch`
-package once that exists, with the same rules.
+The normalising function was local at first. As of 2026-11-12 it is Learn's
+copy of the shared `groupmatch` package (`backend/internal/groupmatch`),
+with the same rules (`OIDC_GROUPS_CLAIM`, `OIDC_GROUP_MATCH`,
+`OIDC_GROUP_PREFIX`).
 
 ## Consequences
 
