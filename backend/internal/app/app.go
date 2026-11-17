@@ -31,6 +31,7 @@ import (
 	"github.com/AGlElectronics/learn/backend/internal/learn"
 	"github.com/AGlElectronics/learn/backend/internal/mail"
 	"github.com/AGlElectronics/learn/backend/internal/notify"
+	"github.com/AGlElectronics/learn/backend/internal/tgcatchall"
 	"github.com/AGlElectronics/learn/backend/internal/tlscert"
 )
 
@@ -156,8 +157,14 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	if source, warning := mailer.Source(ctx); warning != "" {
 		logger.Warn().Str("mail_source", source).Msg(warning)
 	}
+	catchall := tgcatchall.New(tgcatchall.FromEnv(os.Getenv))
+	if catchall.Enabled() {
+		// Email stays on Mailpit/SMTP; catch-all only redirects Learn's Telegram channel.
+		logger.Info().Msg("Telegram dev catch-all on: Learn Telegram notices go to the test chat (email still uses Mailpit/SMTP)")
+	}
 	notifier := notify.New(logger, notify.NewEmail(mailer), notify.NewTelegram(notify.TelegramConfig{
 		BotToken: cfg.TelegramBotToken, APIURL: cfg.TelegramAPIURL, Enabled: svc.TelegramEnabled, Logger: logger,
+		Catchall: catchall,
 	}))
 	reminders := learn.NewReminders(svc, notifier, cfg.PublicBaseURL, httpx.OrgNameFunc(brandProvider, den), logger)
 	go reminders.Run(ctx)

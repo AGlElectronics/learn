@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/AGlElectronics/learn/backend/internal/tgcatchall"
 )
 
 // ChannelTelegram is the Telegram channel's name and Recipient.Channels key
@@ -35,21 +37,25 @@ type TelegramConfig struct {
 	Enabled    func(ctx context.Context) bool
 	HTTPClient *http.Client
 	Logger     zerolog.Logger
+	// Catchall, when enabled (Compose / APP_ENV=development), sends every
+	// notice to one test chat with a prefix naming the intended person.
+	Catchall *tgcatchall.Client
 }
 
 // Telegram delivers notices with the Bot API's sendMessage to the chat id
 // a person saved under "My notifications".
 type Telegram struct {
-	token   string
-	apiURL  string
-	enabled func(ctx context.Context) bool
-	http    *http.Client
-	logger  zerolog.Logger
+	token    string
+	apiURL   string
+	enabled  func(ctx context.Context) bool
+	http     *http.Client
+	logger   zerolog.Logger
+	catchall *tgcatchall.Client
 }
 
-// NewTelegram returns nil when the bot token is empty (channel disabled).
+// NewTelegram returns nil when the bot token is empty and no catch-all is on.
 func NewTelegram(cfg TelegramConfig) *Telegram {
-	if strings.TrimSpace(cfg.BotToken) == "" {
+	if strings.TrimSpace(cfg.BotToken) == "" && !cfg.Catchall.Enabled() {
 		return nil
 	}
 	api := strings.TrimRight(strings.TrimSpace(cfg.APIURL), "/")
@@ -63,11 +69,12 @@ func NewTelegram(cfg TelegramConfig) *Telegram {
 	return &Telegram{
 		token: strings.TrimSpace(cfg.BotToken), apiURL: api, enabled: cfg.Enabled, http: client,
 		logger: cfg.Logger.With().Str("component", "notify_telegram").Logger(),
+		catchall: cfg.Catchall,
 	}
 }
 
-// Enabled reports whether a bot token is configured.
-func (t *Telegram) Enabled() bool { return t != nil && t.token != "" }
+// Enabled reports whether a bot token or a dev catch-all is configured.
+func (t *Telegram) Enabled() bool { return t != nil && (t.token != "" || t.catchall.Enabled()) }
 
 // Name implements Channel.
 func (t *Telegram) Name() string { return ChannelTelegram }
@@ -77,11 +84,10 @@ const telegramMaxText = 4096
 
 // Send implements Channel. A recipient without a chat id gets
 // ErrNoAddress; with the module setting off it returns ErrChannelOff.
+// With a Compose catch-all, every notice goes there (no personal chat id
+// required), prefixed with who it was for.
 func (t *Telegram) Send(ctx context.Context, r Recipient, n Notice) error {
 	chat := strings.TrimSpace(r.Channels[ChannelTelegram])
-	if chat == "" {
-		return ErrNoAddress
-	}
 	if t.enabled != nil && !t.enabled(ctx) {
 		return ErrChannelOff
 	}
@@ -94,6 +100,31 @@ func (t *Telegram) Send(ctx context.Context, r Recipient, n Notice) error {
 	}
 	if len([]rune(text)) > telegramMaxText {
 		text = string([]rune(text)[:telegramMaxText-1]) + "…"
+	}
+	if t.catchall.Enabled() {
+		who := strings.TrimSpace(r.DisplayName)
+		if em := strings.TrimSpace(r.Email); em != "" {
+			if who != "" {
+				who += " <" + em + ">"
+			} else {
+				who = em
+			}
+		}
+		if who == "" {
+			if chat != "" {
+				who = "chat " + chat
+			} else {
+				who = r.UserID.String()
+			}
+		}
+		kind := strings.TrimSpace(n.Kind)
+		if kind == "" {
+			kind = "notice"
+		}
+		return t.catchall.Send(ctx, "Learn · "+who+" · "+kind, text)
+	}
+	if chat == "" {
+		return ErrNoAddress
 	}
 	payload, err := json.Marshal(map[string]any{"chat_id": chat, "text": text, "disable_web_page_preview": true})
 	if err != nil {
