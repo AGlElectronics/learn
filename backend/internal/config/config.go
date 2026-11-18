@@ -296,6 +296,10 @@ func (c *Config) validate(errs []string) error {
 		errs = append(errs, fmt.Sprintf("GROUP_DIRECTORY must be 'keycloak' or 'off', got %q", c.GroupDirectory))
 	}
 
+	if c.StatsPullToken != "" && len(c.StatsPullToken) < MinSecretLength {
+		errs = append(errs, fmt.Sprintf("STATS_PULL_TOKEN must be at least %d characters (openssl rand -hex 32)", MinSecretLength))
+	}
+
 	if !c.Development() {
 		if c.LearnServiceToken != "" {
 			if err := CheckSecret(c.LearnServiceToken); err != nil {
