@@ -68,7 +68,7 @@ func NewTelegram(cfg TelegramConfig) *Telegram {
 	}
 	return &Telegram{
 		token: strings.TrimSpace(cfg.BotToken), apiURL: api, enabled: cfg.Enabled, http: client,
-		logger: cfg.Logger.With().Str("component", "notify_telegram").Logger(),
+		logger:   cfg.Logger.With().Str("component", "notify_telegram").Logger(),
 		catchall: cfg.Catchall,
 	}
 }
