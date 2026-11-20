@@ -63,6 +63,9 @@ type Config struct {
 	// (HR_SERVICE_TOKEN). Empty: only signed-in staff may read it.
 	HRServiceToken string
 
+	// StatsPullToken protects GET /api/internal/stats for Stats. Empty disables it.
+	StatsPullToken string
+
 	// Brand provider
 	BrandLocalPath string // optional brand.json; Den's brand overlays it once paired
 	// Den is the pairing configuration (DEN_MODE, DEN_INTERNAL_URL,
@@ -220,6 +223,8 @@ func Load() (*Config, error) {
 		GroupMatch:       groups,
 		HRServiceToken:   getEnv("HR_SERVICE_TOKEN", ""),
 
+		StatsPullToken: strings.TrimSpace(getEnv("STATS_PULL_TOKEN", "")),
+
 		BrandLocalPath: getEnv("BRAND_LOCAL_PATH", ""),
 		Den:            den,
 
@@ -289,6 +294,10 @@ func (c *Config) validate(errs []string) error {
 	case GroupDirectoryKeycloak, GroupDirectoryOff:
 	default:
 		errs = append(errs, fmt.Sprintf("GROUP_DIRECTORY must be 'keycloak' or 'off', got %q", c.GroupDirectory))
+	}
+
+	if c.StatsPullToken != "" && len(c.StatsPullToken) < MinSecretLength {
+		errs = append(errs, fmt.Sprintf("STATS_PULL_TOKEN must be at least %d characters (openssl rand -hex 32)", MinSecretLength))
 	}
 
 	if !c.Development() {

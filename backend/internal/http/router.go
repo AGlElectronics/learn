@@ -175,6 +175,7 @@ func NewRouter(deps Deps, version string) http.Handler {
 		api.Get("/den/state", den.StateHandler)
 		api.Get("/qualification-catalog", qualificationCatalogHandler(courses.svc))
 		api.Get("/internal/holdings", holdingsHandler(deps.Config, courses.svc))
+		api.Get("/internal/stats", internalStatsHandler(deps.Config.StatsPullToken, deps.Pool))
 		api.With(verifyLimiter().Middleware).Get("/public/verify/{code}", verifyHandler(courses.svc))
 		// Den's backend calls this with the pairing credential and the person's
 		// issuer and subject. A person's access token is not accepted.

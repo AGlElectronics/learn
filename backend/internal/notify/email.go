@@ -66,6 +66,8 @@ func isNilSender(s mail.Sender) bool {
 		return v == nil
 	case *mail.Switch:
 		return v == nil
+	case *mail.Catchall:
+		return v == nil
 	}
 	return false
 }
